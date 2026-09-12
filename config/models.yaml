@@ -1,0 +1,3 @@
+# Model names are configuration, not architecture.
+main: qwen3:14b
+fast: qwen3:8b
