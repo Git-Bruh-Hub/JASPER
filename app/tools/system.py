@@ -93,6 +93,57 @@ def _number_to_float(value: str) -> float | None:
         return None
 
 
+def _storage_devices() -> list[dict]:
+    """Return mounted Windows drive volumes using read-only disk queries."""
+    drives: list[dict] = []
+    seen: set[str] = set()
+
+    # On Windows, psutil.disk_partitions() gives mounted volumes. On other
+    # platforms, keep a useful fallback to the root filesystem.
+    try:
+        partitions = psutil.disk_partitions(all=False)
+    except Exception:
+        partitions = []
+
+    if os.name == "nt":
+        for partition in partitions:
+            mountpoint = partition.mountpoint
+            if not mountpoint or mountpoint.upper() in seen:
+                continue
+            try:
+                usage = psutil.disk_usage(mountpoint)
+            except OSError:
+                continue
+            seen.add(mountpoint.upper())
+            drives.append(
+                {
+                    "path": mountpoint,
+                    "total_gb": round(usage.total / BYTES_PER_GB, 2),
+                    "used_gb": round(usage.used / BYTES_PER_GB, 2),
+                    "free_gb": round(usage.free / BYTES_PER_GB, 2),
+                    "free_percent": round((usage.free / usage.total) * 100, 1),
+                    "filesystem": partition.fstype or None,
+                }
+            )
+    else:
+        try:
+            usage = psutil.disk_usage(os.sep)
+            drives.append(
+                {
+                    "path": os.sep,
+                    "total_gb": round(usage.total / BYTES_PER_GB, 2),
+                    "used_gb": round(usage.used / BYTES_PER_GB, 2),
+                    "free_gb": round(usage.free / BYTES_PER_GB, 2),
+                    "free_percent": round((usage.free / usage.total) * 100, 1),
+                    "filesystem": None,
+                }
+            )
+        except OSError:
+            pass
+
+    return drives
+
+
 def _ollama_models() -> dict:
     """Read locally loaded Ollama models from the loopback API."""
     from app.core.config import OLLAMA_HOST
@@ -130,22 +181,13 @@ def _ollama_models() -> dict:
 
 
 def get_system_info() -> dict:
-    """Return read-only hardware, OS, storage, and local Ollama state."""
-    vm = psutil.virtual_memory()
-    root = Path(os.environ.get("SystemDrive", "C:"))
+    """Return read-only hardware, OS, storage, and local Ollama state.
 
-    disk = None
-    try:
-        usage = psutil.disk_usage(str(root) + os.sep)
-        disk = {
-            "path": str(root) + os.sep,
-            "total_gb": round(usage.total / BYTES_PER_GB, 2),
-            "used_gb": round(usage.used / BYTES_PER_GB, 2),
-            "free_gb": round(usage.free / BYTES_PER_GB, 2),
-            "free_percent": round((usage.free / usage.total) * 100, 1),
-        }
-    except OSError:
-        pass
+    Values in this result are observations made at call time. This function
+    does not infer or estimate hardware specifications.
+    """
+    vm = psutil.virtual_memory()
+    storage = _storage_devices()
 
     cpu_name = _windows_cpu_name() or platform.processor() or platform.machine()
     gpus = _nvidia_gpus()
@@ -162,6 +204,8 @@ def get_system_info() -> dict:
         "ram_available_gb": round(vm.available / BYTES_PER_GB, 2),
         "ram_used_percent": vm.percent,
         "gpu": gpus,
-        "system_drive": disk,
+        "storage": storage,
+        # Keep the old key for compatibility with v0.2.2 consumers.
+        "system_drive": storage[0] if storage else None,
         "ollama": _ollama_models(),
     }

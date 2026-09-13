@@ -1,4 +1,4 @@
-# JASPER v0.2.2
+# JASPER v0.2.4
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -117,3 +117,20 @@ For Ollama state:
 ```text
 What model is currently loaded in Ollama, and how much VRAM is it using?
 ```
+
+
+## v0.2.3 — System Information Accuracy
+
+- Direct hardware/runtime fact questions force a fresh `get_system_info` observation before answering.
+- RAM is read from the live system rather than inferred by the model.
+- Storage is enumerated across mounted volumes rather than assuming a single 512 GB drive.
+- Direct system-fact responses are formatted from observed tool values, avoiding LLM substitution of guessed hardware specifications.
+- Existing read-only safety boundaries remain unchanged.
+
+## v0.2.4 — Expanded Ground-Truth System Observation
+
+- Expanded live-system fact detection beyond exact single-question patterns.
+- Combined hardware/runtime questions such as CPU + GPU + RAM + storage + Ollama now force a fresh `get_system_info` observation.
+- Added coverage for natural phrases such as `my PC specs` and `system information`.
+- Conceptual questions such as `How much RAM should a gaming PC have?` remain with the normal LLM path.
+- Direct system facts are still formatted only from observed tool values; no LLM guessing is used.

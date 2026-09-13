@@ -60,8 +60,8 @@ async def main():
     setup_logging()
     log = logging.getLogger("jasper")
     jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
-    print("JASPER v0.2.2")
-    print("Tool calling enabled (read-only). Hardware/runtime awareness added. Type 'exit' to quit.\n")
+    print("JASPER v0.2.4")
+    print("Tool calling enabled (read-only). Ground-truth system facts added. Type 'exit' to quit.\n")
     while True:
         try:
             user_text = input("You: ").strip()
