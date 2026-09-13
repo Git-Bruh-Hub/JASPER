@@ -1,4 +1,4 @@
-# JASPER v0.2.4
+# JASPER v0.3.0
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -134,3 +134,33 @@ What model is currently loaded in Ollama, and how much VRAM is it using?
 - Added coverage for natural phrases such as `my PC specs` and `system information`.
 - Conceptual questions such as `How much RAM should a gaming PC have?` remain with the normal LLM path.
 - Direct system facts are still formatted only from observed tool values; no LLM guessing is used.
+
+
+## v0.3.0 — Explicit Long-Term Memory
+
+v0.3 adds a local, persistent long-term memory layer on top of the existing SQLite conversation history.
+
+- User can explicitly save memories with natural language such as `Remember that my router is a Tenda TX3.`
+- JASPER can recall saved memories when they are relevant to a later question.
+- JASPER can list memories with `What do you remember about me?`.
+- JASPER can forget matching memories with `Forget my router Tenda TX3.`
+- Memory search uses deterministic local token overlap; no embeddings or external memory service are required.
+- Only explicit user memory commands write long-term memories in v0.3. Automatic LLM-generated memory extraction is intentionally disabled for accuracy and privacy.
+- Memory context is marked as user-provided remembered facts so the model is instructed not to invent or silently modify them.
+- The existing read-only system tools remain unchanged.
+
+### Memory examples
+
+```text
+Remember that my router is a Tenda TX3.
+```
+
+```text
+What do you remember about my router?
+```
+
+```text
+Forget my router Tenda TX3.
+```
+
+Long-term memories are stored locally in `data/jasper.db`.

@@ -16,3 +16,5 @@ JASPER_KEEP_ALIVE = os.getenv("JASPER_KEEP_ALIVE", "5m")
 JASPER_THINK = os.getenv("JASPER_THINK", "false").lower() in {"1", "true", "yes", "on"}
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
+JASPER_MEMORY_ENABLED = os.getenv("JASPER_MEMORY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+JASPER_MEMORY_SEARCH_LIMIT = max(1, int(os.getenv("JASPER_MEMORY_SEARCH_LIMIT", "5")))

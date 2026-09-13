@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from app.core.config import MAX_HISTORY_MESSAGES
+from app.memory.memory_manager import MemoryManager
 from app.models.model_router import ModelRouter
 from app.core.permissions import PermissionManager
 from app.tools.registry import ToolRegistry
@@ -189,6 +190,7 @@ class Orchestrator:
         self.registry = registry
         self.permissions = permissions
         self.memory = memory
+        self.memory_manager = MemoryManager(memory)
         self.models = ModelRouter()
         self.log = logging.getLogger("jasper.orchestrator")
 
@@ -228,6 +230,13 @@ class Orchestrator:
     async def respond(self, user_text: str) -> str:
         self.memory.add("user", user_text)
 
+        memory_command = self.memory_manager.parse_command(user_text)
+        if memory_command is not None:
+            answer = self.memory_manager.handle_command(memory_command)
+            self.memory.add("assistant", answer)
+            self.log.info("memory command handled action=%s", memory_command.action)
+            return answer
+
         if _requires_system_observation(user_text):
             info = _system_observation_tool_result(self.registry, self.permissions)
             self.log.info("forced system observation for direct fact query")
@@ -236,6 +245,9 @@ class Orchestrator:
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        memory_context = self.memory_manager.context_for(user_text)
+        if memory_context:
+            messages.append({"role": "system", "content": memory_context})
         messages.extend(
             {"role": role, "content": content}
             for role, content in self.memory.recent(MAX_HISTORY_MESSAGES)
