@@ -1,4 +1,4 @@
-# JASPER v0.3.0
+# JASPER v0.4.0
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -118,7 +118,6 @@ For Ollama state:
 What model is currently loaded in Ollama, and how much VRAM is it using?
 ```
 
-
 ## v0.2.3 — System Information Accuracy
 
 - Direct hardware/runtime fact questions force a fresh `get_system_info` observation before answering.
@@ -134,7 +133,6 @@ What model is currently loaded in Ollama, and how much VRAM is it using?
 - Added coverage for natural phrases such as `my PC specs` and `system information`.
 - Conceptual questions such as `How much RAM should a gaming PC have?` remain with the normal LLM path.
 - Direct system facts are still formatted only from observed tool values; no LLM guessing is used.
-
 
 ## v0.3.0 — Explicit Long-Term Memory
 
@@ -164,3 +162,94 @@ Forget my router Tenda TX3.
 ```
 
 Long-term memories are stored locally in `data/jasper.db`.
+
+## v0.4.0 — Voice Interface Foundation
+
+v0.4 adds voice as an interface around the existing JASPER Core instead of putting speech logic inside the reasoning system.
+
+Architecture:
+
+```text
+Text  ────────────────────────┐
+                              ↓
+Voice → STT → JASPER Core → response → TTS → Voice
+```
+
+### Voice features
+
+- `SpeechToTextProvider` and `TextToSpeechProvider` abstractions keep providers replaceable.
+- Local STT uses `faster-whisper` with lazy model loading.
+- STT defaults to GPU with automatic CPU fallback when CUDA is unavailable.
+- Audio recording is local and stops after configurable silence or a maximum duration.
+- Windows built-in Speech Synthesis is the default TTS provider, so a neural TTS model is not required for the first voice test.
+- Piper TTS is available as an optional local neural provider.
+- Voice dependencies live in `requirements-voice.txt`; the normal text-only installation remains lightweight.
+- Voice is disabled by default through `JASPER_VOICE_ENABLED=false`.
+- No wake-word listener is enabled in v0.4.
+- No autonomous voice-triggered actions are introduced in v0.4.
+
+### Enable voice
+
+Install the optional voice stack:
+
+```powershell
+pip install -r requirements-voice.txt
+```
+
+Then set in `.env`:
+
+```text
+JASPER_VOICE_ENABLED=true
+```
+
+Start JASPER and use:
+
+```text
+:voice
+```
+
+JASPER records one utterance, transcribes it locally, sends the text through the normal JASPER Core, then speaks the response.
+
+You can also use:
+
+```text
+:speak Hello from JASPER.
+```
+
+for a direct TTS test.
+
+### STT configuration
+
+`faster-whisper` can run on NVIDIA CUDA or CPU. GPU execution may require the appropriate NVIDIA CUDA/cuDNN runtime libraries for the installed faster-whisper/CTranslate2 version. Keep `JASPER_STT_DEVICE=auto` unless you have a reason to force a device.
+
+Defaults:
+
+```text
+JASPER_STT_MODEL=small
+JASPER_STT_DEVICE=auto
+JASPER_STT_GPU_COMPUTE_TYPE=int8_float16
+JASPER_STT_CPU_COMPUTE_TYPE=int8
+JASPER_STT_LANGUAGE=auto
+```
+
+### TTS configuration
+
+Default provider:
+
+```text
+JASPER_TTS_PROVIDER=windows
+```
+
+For local neural Piper TTS, install `piper-tts`, download a compatible voice model, then configure:
+
+```text
+JASPER_TTS_PROVIDER=piper
+JASPER_PIPER_MODEL=data/voices/en_US-lessac-medium.onnx
+JASPER_PIPER_CONFIG=data/voices/en_US-lessac-medium.onnx.json
+```
+
+Voice models are external assets and should be stored locally rather than committed to the JASPER repository.
+
+## v0.4 safety boundary
+
+Voice is an interface only. Spoken input is converted to text and passed through the same JASPER Core, memory, tool, and permission layers used by typed input. Voice does not bypass permissions and does not gain additional computer-control capabilities.

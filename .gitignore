@@ -5,4 +5,8 @@ __pycache__/
 data/*.db
 data/logs/*
 !data/logs/.gitkeep
+data/voice/*
+!data/voice/.gitkeep
+data/voices/*
+!data/voices/.gitkeep
 .pytest_cache/

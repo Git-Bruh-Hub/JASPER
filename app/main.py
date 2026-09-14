@@ -1,12 +1,34 @@
 import asyncio
 import logging
+
+from app.core.config import (
+    JASPER_PIPER_CONFIG,
+    JASPER_PIPER_MODEL,
+    JASPER_PIPER_USE_CUDA,
+    JASPER_STT_CPU_COMPUTE_TYPE,
+    JASPER_STT_DEVICE,
+    JASPER_STT_GPU_COMPUTE_TYPE,
+    JASPER_STT_LANGUAGE,
+    JASPER_STT_MODEL,
+    JASPER_TTS_PROVIDER,
+    JASPER_VOICE_ENABLED,
+    JASPER_VOICE_MIN_SECONDS,
+    JASPER_VOICE_RECORD_MAX_SECONDS,
+    JASPER_VOICE_SAMPLE_RATE,
+    JASPER_VOICE_SILENCE_SECONDS,
+    JASPER_VOICE_SILENCE_THRESHOLD,
+    VOICE_TEMP_DIR,
+)
 from app.core.logging_setup import setup_logging
 from app.core.orchestrator import Orchestrator
 from app.core.permissions import PermissionManager
 from app.memory.sqlite_memory import SQLiteMemory
-from app.tools.registry import ToolRegistry, Tool, Risk
-from app.tools.system import get_system_info
 from app.tools.filesystem import list_directory, read_text_file
+from app.tools.registry import Risk, Tool, ToolRegistry
+from app.tools.system import get_system_info
+from app.voice.manager import VoiceManager
+from app.voice.stt import FasterWhisperSTT
+from app.voice.tts import PiperTTS, WindowsSpeechTTS
 
 
 def build_registry() -> ToolRegistry:
@@ -56,12 +78,55 @@ def build_registry() -> ToolRegistry:
     return registry
 
 
+def build_voice_manager() -> VoiceManager:
+    stt = FasterWhisperSTT(
+        JASPER_STT_MODEL,
+        device=JASPER_STT_DEVICE,
+        gpu_compute_type=JASPER_STT_GPU_COMPUTE_TYPE,
+        cpu_compute_type=JASPER_STT_CPU_COMPUTE_TYPE,
+        language=JASPER_STT_LANGUAGE,
+    )
+
+    if JASPER_TTS_PROVIDER == "windows":
+        tts = WindowsSpeechTTS()
+    elif JASPER_TTS_PROVIDER == "piper":
+        tts = PiperTTS(
+            JASPER_PIPER_MODEL,
+            config_path=JASPER_PIPER_CONFIG,
+            use_cuda=JASPER_PIPER_USE_CUDA,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported JASPER_TTS_PROVIDER={JASPER_TTS_PROVIDER!r}. "
+            "Use 'windows' or 'piper'."
+        )
+
+    return VoiceManager(
+        stt,
+        tts,
+        temp_dir=VOICE_TEMP_DIR,
+        max_seconds=JASPER_VOICE_RECORD_MAX_SECONDS,
+        sample_rate=JASPER_VOICE_SAMPLE_RATE,
+        silence_seconds=JASPER_VOICE_SILENCE_SECONDS,
+        silence_threshold=JASPER_VOICE_SILENCE_THRESHOLD,
+        min_seconds=JASPER_VOICE_MIN_SECONDS,
+    )
+
+
 async def main():
     setup_logging()
     log = logging.getLogger("jasper")
     jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
-    print("JASPER v0.3.0")
-    print("Tool calling + explicit long-term memory enabled. Type 'exit' to quit.\n")
+    voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
+
+    print("JASPER v0.4.0")
+    print("Tool calling + explicit long-term memory enabled.")
+    if voice:
+        print("Voice enabled. Use ':voice' to speak or ':speak <text>' for direct TTS.")
+    else:
+        print("Voice disabled. Set JASPER_VOICE_ENABLED=true to enable it.")
+    print("Type 'exit' to quit.\n")
+
     while True:
         try:
             user_text = input("You: ").strip()
@@ -72,6 +137,40 @@ async def main():
             continue
         if user_text.lower() in {"exit", "quit"}:
             break
+
+        if user_text.lower() == ":voice":
+            if voice is None:
+                print("JASPER: Voice is disabled. Enable JASPER_VOICE_ENABLED in .env and restart.\n")
+                continue
+            try:
+                print("JASPER: Listening...")
+                spoken_text, answer = await voice.run_once(jasper.respond)
+                if not spoken_text:
+                    print("JASPER: I didn't detect any speech.\n")
+                    continue
+                print(f"You (voice): {spoken_text}")
+                print(f"JASPER: {answer}\n")
+            except Exception as exc:
+                log.exception("Voice request failed")
+                print(f"JASPER: Voice request failed: {exc}\n")
+            continue
+
+        if user_text.lower().startswith(":speak"):
+            if voice is None:
+                print("JASPER: Voice is disabled. Enable JASPER_VOICE_ENABLED in .env and restart.\n")
+                continue
+            text_to_speak = user_text[len(":speak"):].strip()
+            if not text_to_speak:
+                print("JASPER: Usage: :speak <text>\n")
+                continue
+            try:
+                voice.speak(text_to_speak)
+                print("JASPER: Spoken.\n")
+            except Exception as exc:
+                log.exception("TTS request failed")
+                print(f"JASPER: TTS failed: {exc}\n")
+            continue
+
         try:
             answer = await jasper.respond(user_text)
             print(f"JASPER: {answer}\n")
