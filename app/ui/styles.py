@@ -80,6 +80,12 @@ QTextBrowser#conversation {
     selection-background-color: #3a3a3a;
 }
 
+QLabel#thinkingIndicator {
+    color: #8c8c8c;
+    font-size: 9pt;
+    padding: 2px 4px 3px 4px;
+}
+
 QFrame.messageCard {
     background: #202020;
     border: 1px solid #303030;
