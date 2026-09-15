@@ -178,7 +178,7 @@ async def main():
                 print("JASPER: Voice is disabled. Enable JASPER_VOICE_ENABLED in .env and restart.\n")
                 continue
             try:
-                print("JASPER: Conversation mode started. Say 'stop listening' or 'berhenti jasper' to end it.\n")
+                print("JASPER: Conversation mode started. Say 'stop listening' to end it.\n")
                 turns = await voice.run_conversation(
                     jasper.respond,
                     max_turns=JASPER_VOICE_CONVERSATION_MAX_TURNS,

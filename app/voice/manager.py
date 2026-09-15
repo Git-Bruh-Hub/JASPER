@@ -10,16 +10,18 @@ from app.voice.audio import record_until_silence
 from app.voice.base import SpeechToTextProvider, TextToSpeechProvider
 
 
+# Conversation-control phrases are deliberately English in v0.4.1.
+# STT testing showed that Malay stop phrases are not reliably transcribed on
+# this local model, so they should not be treated as a safety/control path.
 _DEFAULT_STOP_PHRASES = {
     "stop listening",
+    "please stop listening",
+    "stop listening please",
+    "okay stop listening",
+    "ok stop listening",
     "goodbye jasper",
+    "goodbye jasper please",
     "bye jasper",
-    "berhenti jasper",
-    "berhenti dengar",
-    "cukup jasper",
-    "itu sahaja",
-    "itu saja",
-    "dah cukup",
 }
 
 
@@ -74,11 +76,20 @@ class VoiceManager:
         self.tts.speak(text)
 
     @staticmethod
-    def should_stop_conversation(text: str) -> bool:
+    def _normalize_stop_text(text: str) -> str:
         normalized = text.lower().strip()
         normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
-        normalized = " ".join(normalized.split())
-        return normalized in _DEFAULT_STOP_PHRASES
+        return " ".join(normalized.split())
+
+    @classmethod
+    def should_stop_conversation(cls, text: str) -> bool:
+        """Return True only for explicit, predefined English stop commands.
+
+        This intentionally uses an exact normalized phrase match rather than
+        substring matching. A casual sentence containing words such as
+        "stop" or "bye" should never accidentally terminate conversation.
+        """
+        return cls._normalize_stop_text(text) in _DEFAULT_STOP_PHRASES
 
     async def run_once(self, responder: Callable[[str], Awaitable[str]]) -> tuple[str, str]:
         user_text = self.listen_once()
@@ -99,9 +110,10 @@ class VoiceManager:
     ) -> list[tuple[str, str]]:
         """Run a bounded, hands-free conversation without wake-word listening.
 
-        The loop stops when the user says a local stop phrase, the configured
-        turn limit is reached, or repeated empty recordings occur. All actual
-        responses still go through the existing JASPER responder/orchestrator.
+        The loop stops when the user says a local English stop phrase, the
+        configured turn limit is reached, or repeated empty recordings occur.
+        All actual responses still go through the existing JASPER responder/
+        orchestrator.
         """
         turns: list[tuple[str, str]] = []
         empty_count = 0

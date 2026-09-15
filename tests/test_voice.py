@@ -60,9 +60,43 @@ def test_voice_manager_run_once(tmp_path, monkeypatch):
     assert tts.spoken == ["Hello back."]
 
 
+def test_stop_detector_accepts_normalized_english_variants():
+    accepted = [
+        "stop listening",
+        "STOP LISTENING!",
+        "Please, stop listening.",
+        "stop listening please",
+        "Okay, stop listening",
+        "OK stop listening!!!",
+        "goodbye jasper",
+        "Goodbye, JASPER!",
+        "goodbye jasper please",
+        "bye jasper",
+    ]
+    for text in accepted:
+        assert VoiceManager.should_stop_conversation(text)
+
+
+def test_stop_detector_rejects_ambiguous_or_non_english_phrases():
+    rejected = [
+        "stop",
+        "please stop",
+        "we should stop listening to music",
+        "I heard you say stop listening",
+        "berhenti jasper",
+        "berhenti dengar",
+        "baiklah berhenti dengar",
+        "jangan dengar",
+        "bye",
+        "jasper",
+    ]
+    for text in rejected:
+        assert not VoiceManager.should_stop_conversation(text)
+
+
 def test_conversation_preserves_turns_and_stops_on_local_phrase(tmp_path, monkeypatch):
     tts = FakeTTS()
-    texts = iter(["hi jasper", "apa khabar", "stop listening"])
+    texts = iter(["hi jasper", "apa khabar", "STOP listening!", "should not run"])
 
     class SequenceSTT(SpeechToTextProvider):
         def transcribe(self, audio_path: Path) -> str:
