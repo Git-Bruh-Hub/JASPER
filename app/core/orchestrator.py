@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 from app.core.config import MAX_HISTORY_MESSAGES
 from app.memory.memory_manager import MemoryManager
@@ -16,6 +16,7 @@ Communication and personality:
 - Be helpful, natural, calm, conversational, and easy to understand.
 - Be direct and practical. Give the answer first, then useful explanation or detail.
 - Adapt depth to the user's request: concise for simple questions, detailed when asked.
+- Do not generate unnecessary repetition just to make an answer look detailed.
 - Use clear headings, bullets, numbered lists, tables, quotes, code blocks, and other Markdown formatting when they genuinely improve readability.
 - Never expose raw Markdown markers such as ###, **, or * as plain text when normal Markdown can represent the formatting.
 - Do not overuse emojis, filler, or repeated follow-up offers.
@@ -32,7 +33,9 @@ Accuracy:
 - Distinguish observed facts from assumptions or general knowledge.
 - When a local tool can directly verify a fact, use the tool instead of guessing.
 - If information is uncertain or unavailable, say so clearly rather than filling the gap.
-- Be especially careful with hardware, system state, files, dates, and other user-specific facts.
+- For hardware explanations, prioritize live observations supplied by the system-inspection context.
+- Do not use Intel-specific terminology for AMD CPUs. AMD Ryzen processors use SMT (Simultaneous Multithreading), not Intel's Hyper-Threading branding.
+- Distinguish base clock from maximum boost clock. Never call the base clock the boost clock.
 
 Tool use:
 - You have access to read-only local tools.
@@ -49,9 +52,6 @@ Safety:
 
 MAX_TOOL_ROUNDS = 5
 
-# Direct system-fact questions are routed through the observation tool before
-# the LLM gets a chance to answer. This prevents the model from substituting
-# remembered/common hardware values for the user's actual machine.
 SYSTEM_FACT_PATTERNS = (
     r"\bwhat (?:cpu|processor) (?:am i|do i) (?:using|have)\b",
     r"\bwhat (?:gpu|graphics card|video card) (?:am i|do i) (?:using|have)\b",
@@ -88,20 +88,27 @@ SYSTEM_LIVE_CONTEXT = (
     "pc info",
 )
 
+SYSTEM_GROUNDING_TERMS = (
+    "explain",
+    "describe",
+    "details",
+    "detailed",
+    "specification",
+    "specifications",
+    "about my",
+    "tell me about my",
+    "what can my",
+    "how does my",
+)
+
 
 def _requires_system_observation(text: str) -> bool:
-    """Return True when the user is asking for facts about this live machine."""
+    """Return True when the user is asking for direct facts about this live machine."""
     normalized = " ".join(text.lower().split())
 
-    # Keep the original high-confidence patterns for common direct questions.
     if any(re.search(pattern, normalized) for pattern in SYSTEM_FACT_PATTERNS):
         return True
 
-    # Handle natural combined questions such as:
-    # "Tell me my CPU, GPU, VRAM, RAM, storage, and currently loaded model."
-    # The old detector missed these because none of the single-fact regexes
-    # required an exact phrase match. Requiring multiple hardware/runtime
-    # categories plus live-system context avoids hijacking conceptual questions.
     matched_categories = 0
     for terms in SYSTEM_FACT_TERMS.values():
         if any(term in normalized for term in terms):
@@ -117,17 +124,64 @@ def _requires_system_observation(text: str) -> bool:
     if matched_categories >= 2 and has_live_context:
         return True
 
-    # Common explicit system-spec phrasing.
     return bool(
         re.search(r"\b(what|tell me|show me|give me)\b.*\b(my|this)\b.*\b(pc|computer|system|hardware)\b", normalized)
         or re.search(r"\b(my|this)\b.*\b(pc|computer|system|hardware)\b.*\b(specs|information|info)\b", normalized)
     )
 
 
+def _requires_system_grounding(text: str) -> bool:
+    """Return True when a hardware explanation should receive live machine facts."""
+    normalized = " ".join(text.lower().split())
+    has_hardware = any(any(term in normalized for term in terms) for terms in SYSTEM_FACT_TERMS.values())
+    has_live_context = any(
+        re.search(rf"\b{re.escape(context)}\b", normalized)
+        if " " not in context
+        else context in normalized
+        for context in SYSTEM_LIVE_CONTEXT
+    )
+    return has_hardware and has_live_context and any(term in normalized for term in SYSTEM_GROUNDING_TERMS)
+
+
 def _system_observation_tool_result(registry: ToolRegistry, permissions: PermissionManager) -> dict:
     tool = registry.get("get_system_info")
     permissions.check(tool)
     return tool.handler()
+
+
+def _grounding_context(question: str, info: dict) -> str:
+    """Build a compact, observation-only context block relevant to the question."""
+    q = question.lower()
+    observed: dict[str, Any] = {}
+
+    asks_cpu = "cpu" in q or "processor" in q
+    asks_gpu = "gpu" in q or "graphics card" in q or "video card" in q
+    asks_ram = "ram" in q or "memory" in q
+    asks_storage = "storage" in q or "disk space" in q or "drive" in q
+    asks_ollama = "ollama" in q
+
+    if asks_cpu:
+        observed["cpu"] = info.get("cpu")
+        observed["cpu_details"] = info.get("cpu_details", {})
+        observed["cpu_physical_cores"] = info.get("cpu_physical_cores")
+        observed["cpu_logical_cores"] = info.get("cpu_logical_cores")
+    if asks_gpu:
+        observed["gpu"] = info.get("gpu") or []
+    if asks_ram:
+        observed["ram_total_gb"] = info.get("ram_total_gb")
+        observed["ram_available_gb"] = info.get("ram_available_gb")
+        observed["ram_used_percent"] = info.get("ram_used_percent")
+    if asks_storage:
+        observed["storage"] = info.get("storage") or []
+    if asks_ollama:
+        observed["ollama"] = info.get("ollama") or {}
+
+    return (
+        "Live system observations from the read-only inspection tool follow. "
+        "Treat these as authoritative for this machine. Do not replace them with remembered values. "
+        "You may explain general concepts using your model knowledge, but do not invent or silently alter observed values.\n\n"
+        + json.dumps(observed, ensure_ascii=False, indent=2, default=str)
+    )
 
 
 def _format_system_fact_answer(question: str, info: dict) -> str:
@@ -239,18 +293,18 @@ class Orchestrator:
             return json.dumps(result, ensure_ascii=False, default=str)
         except Exception as exc:
             self.log.exception("tool failed name=%s", name)
-            return json.dumps({
-                "error": type(exc).__name__,
-                "message": str(exc),
-            }, ensure_ascii=False)
+            return json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
 
-    async def respond(self, user_text: str) -> str:
+    async def respond(self, user_text: str, on_chunk: Callable[[str], None] | None = None) -> str:
+        """Respond to a request; stream generated text when on_chunk is supplied."""
         self.memory.add("user", user_text)
 
         memory_command = self.memory_manager.parse_command(user_text)
         if memory_command is not None:
             answer = self.memory_manager.handle_command(memory_command)
             self.memory.add("assistant", answer)
+            if on_chunk:
+                on_chunk(answer)
             self.log.info("memory command handled action=%s", memory_command.action)
             return answer
 
@@ -259,8 +313,11 @@ class Orchestrator:
             self.log.info("forced system observation for direct fact query")
             answer = _format_system_fact_answer(user_text, info)
             self.memory.add("assistant", answer)
+            if on_chunk:
+                on_chunk(answer)
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
+
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
@@ -270,16 +327,24 @@ class Orchestrator:
             for role, content in self.memory.recent(MAX_HISTORY_MESSAGES)
         )
 
+        if _requires_system_grounding(user_text):
+            info = _system_observation_tool_result(self.registry, self.permissions)
+            messages.append({"role": "system", "content": _grounding_context(user_text, info)})
+            self.log.info("added live system grounding for hardware explanation")
+
         provider, model = self.models.provider_for(user_text)
         tools = self._tool_schemas()
 
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
-            response = await provider.chat(messages, model=model, tools=tools)
-            message = response.get("message", {})
-            tool_calls = message.get("tool_calls") or []
+            if on_chunk is None:
+                response = await provider.chat(messages, model=model, tools=tools)
+                message = response.get("message", {})
+            else:
+                message, response = await self._stream_model_round(
+                    provider, messages, model=model, tools=tools, on_chunk=on_chunk
+                )
 
-            # Preserve the assistant message, including tool_calls, exactly enough
-            # for Ollama to continue the tool-calling conversation.
+            tool_calls = message.get("tool_calls") or []
             messages.append(message)
 
             if not tool_calls:
@@ -294,15 +359,40 @@ class Orchestrator:
                     result = await self._execute_tool_call(call)
                 except Exception as exc:
                     self.log.exception("tool request rejected name=%s", name)
-                    result = json.dumps({
-                        "error": type(exc).__name__,
-                        "message": str(exc),
-                    }, ensure_ascii=False)
+                    result = json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
 
-                messages.append({
-                    "role": "tool",
-                    "tool_name": name,
-                    "content": result,
-                })
+                messages.append({"role": "tool", "tool_name": name, "content": result})
 
         raise RuntimeError(f"Tool loop exceeded {MAX_TOOL_ROUNDS} rounds; request stopped for safety.")
+
+    async def _stream_model_round(
+        self,
+        provider,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tools: list[dict[str, Any]],
+        on_chunk: Callable[[str], None],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Stream one model round and reconstruct the final assistant message."""
+        content_parts: list[str] = []
+        final_chunk: dict[str, Any] = {}
+        final_tool_calls: list[dict[str, Any]] = []
+
+        async for chunk in provider.stream_chat(messages, model=model, tools=tools):
+            final_chunk = chunk
+            message = chunk.get("message") or {}
+            piece = message.get("content") or ""
+            if piece:
+                content_parts.append(piece)
+                on_chunk(piece)
+            if message.get("tool_calls"):
+                final_tool_calls = message.get("tool_calls") or []
+
+        final_message = dict(final_chunk.get("message") or {})
+        if content_parts:
+            final_message["content"] = "".join(content_parts)
+        if final_tool_calls:
+            final_message["tool_calls"] = final_tool_calls
+
+        return final_message, final_chunk
