@@ -30,8 +30,6 @@ def _configure_cuda_runtime() -> list[Path]:
     except Exception:
         pass
 
-    # sys.prefix covers the active virtual environment even when site metadata
-    # is unavailable or has been customized.
     roots.append(Path(sys.prefix) / "Lib" / "site-packages")
 
     bin_dirs: list[Path] = []
@@ -51,8 +49,6 @@ def _configure_cuda_runtime() -> list[Path]:
     if not bin_dirs:
         return []
 
-    # os.add_dll_directory handles modern Windows DLL search semantics. Keep
-    # the returned handles alive for the lifetime of the process.
     add_dll_directory = getattr(os, "add_dll_directory", None)
     if add_dll_directory is not None:
         for directory in bin_dirs:
@@ -61,8 +57,6 @@ def _configure_cuda_runtime() -> list[Path]:
             except OSError:
                 pass
 
-    # CTranslate2/native CUDA loading can also consult PATH. Modify only the
-    # current JASPER process, never the user's persistent Windows environment.
     current_path = os.environ.get("PATH", "")
     path_entries = current_path.split(os.pathsep) if current_path else []
     normalized = {os.path.normcase(os.path.normpath(entry)) for entry in path_entries}
@@ -77,6 +71,20 @@ def _configure_cuda_runtime() -> list[Path]:
     return bin_dirs
 
 
+def _normalize_language(language: str) -> str | None:
+    value = language.strip().lower()
+    if not value or value == "auto":
+        return None
+    aliases = {
+        "bm": "ms",
+        "bahasa melayu": "ms",
+        "bahasa malaysia": "ms",
+        "malay": "ms",
+        "ms-my": "ms",
+    }
+    return aliases.get(value, value)
+
+
 class FasterWhisperSTT(SpeechToTextProvider):
     """Local speech recognition using faster-whisper with lazy model loading."""
 
@@ -88,12 +96,16 @@ class FasterWhisperSTT(SpeechToTextProvider):
         gpu_compute_type: str = "int8_float16",
         cpu_compute_type: str = "int8",
         language: str = "auto",
+        beam_size: int = 5,
+        initial_prompt: str = "",
     ) -> None:
         self.model_name = model_name
         self.device = device.lower()
         self.gpu_compute_type = gpu_compute_type
         self.cpu_compute_type = cpu_compute_type
-        self.language = None if language.lower() == "auto" else language
+        self.language = _normalize_language(language)
+        self.beam_size = max(1, int(beam_size))
+        self.initial_prompt = initial_prompt.strip()
         self._model = None
         self._device = None
         self.log = logging.getLogger("jasper.voice.stt")
@@ -147,12 +159,15 @@ class FasterWhisperSTT(SpeechToTextProvider):
         if not audio_path.exists():
             raise FileNotFoundError(audio_path)
 
-        segments, _info = self._model.transcribe(
-            str(audio_path),
-            language=self.language,
-            beam_size=5,
-            vad_filter=True,
-        )
+        kwargs = {
+            "language": self.language,
+            "beam_size": self.beam_size,
+            "vad_filter": True,
+        }
+        if self.initial_prompt:
+            kwargs["initial_prompt"] = self.initial_prompt
+
+        segments, _info = self._model.transcribe(str(audio_path), **kwargs)
         text = " ".join(segment.text.strip() for segment in segments).strip()
         if not text:
             return ""
