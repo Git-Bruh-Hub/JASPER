@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -74,7 +75,9 @@ class VoiceManager:
 
     @staticmethod
     def should_stop_conversation(text: str) -> bool:
-        normalized = " ".join(text.lower().strip().split())
+        normalized = text.lower().strip()
+        normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
+        normalized = " ".join(normalized.split())
         return normalized in _DEFAULT_STOP_PHRASES
 
     async def run_once(self, responder: Callable[[str], Awaitable[str]]) -> tuple[str, str]:
