@@ -52,6 +52,9 @@ class MainWindow(QMainWindow):
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setInterval(450)
         self._thinking_timer.timeout.connect(self._animate_thinking)
+        self._messages: list[tuple[str, str]] = []
+        self._streaming_content = ""
+        self._streaming_active = False
         self.setWindowTitle("JASPER")
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
@@ -150,6 +153,7 @@ class MainWindow(QMainWindow):
             "blockquote{border-left:3px solid #555;padding-left:11px;color:#bdbdbd;margin:8px 0;} "
             "code{background:#242424;padding:2px 4px;} "
             "pre{background:#101010;border:1px solid #282828;padding:10px;margin:8px 0;} "
+            "hr{border:0;border-top:1px solid #2b2b2b;margin:12px 0;} "
             "a{color:#8ee6a1;}"
         )
         chat_layout.addWidget(self.conversation, 1)
@@ -242,6 +246,7 @@ class MainWindow(QMainWindow):
         self.request_text.connect(self.worker.send_text)
         self.request_voice.connect(self.worker.listen_once)
         self.request_refresh_status.connect(self.worker.refresh_system_status)
+        self.worker.response_stream.connect(self._on_stream_chunk)
         self.worker.response_ready.connect(self._on_response)
         self.worker.status_changed.connect(self._set_status)
         self.worker.system_status_ready.connect(self._on_system_status)
@@ -286,22 +291,59 @@ class MainWindow(QMainWindow):
             return
         self._append_message("You", text)
         self.input.clear()
+        self._streaming_active = True
+        self._streaming_content = ""
+        self._show_thinking("JASPER is working")
         self._set_busy(True)
         self.request_text.emit(text)
 
     def _listen(self) -> None:
         if self.busy or not JASPER_VOICE_ENABLED:
             return
+        self._streaming_active = False
+        self._streaming_content = ""
         self._set_busy(True)
         self._show_thinking("Listening")
         self.request_voice.emit()
 
+    @Slot(str)
+    def _on_stream_chunk(self, chunk: str) -> None:
+        if not self._streaming_active:
+            self._streaming_active = True
+            self._streaming_content = ""
+        self._streaming_content += chunk
+        self._thinking_timer.stop()
+        self.thinking_indicator.hide()
+
+        if self._messages and self._messages[-1][0] == "JASPER":
+            self._messages[-1] = ("JASPER", self._streaming_content)
+        else:
+            self._messages.append(("JASPER", self._streaming_content))
+        self._render_conversation()
+
     @Slot(str, str)
     def _on_response(self, kind: str, content: str) -> None:
         if kind == "voice":
+            self._streaming_active = False
+            self._streaming_content = ""
+            self._stop_thinking()
             spoken, _, answer = content.partition("\n\n")
             self._append_message("You (voice)", spoken)
             self._append_message("JASPER", answer)
+        elif kind == "voice_empty":
+            self._streaming_active = False
+            self._streaming_content = ""
+            self._stop_thinking()
+            self._append_message("JASPER", content)
+        elif self._streaming_active:
+            self._streaming_content = content
+            if self._messages and self._messages[-1][0] == "JASPER":
+                self._messages[-1] = ("JASPER", content)
+            else:
+                self._messages.append(("JASPER", content))
+            self._streaming_active = False
+            self._stop_thinking()
+            self._render_conversation()
         else:
             self._append_message("JASPER", content)
 
@@ -315,7 +357,7 @@ class MainWindow(QMainWindow):
             "LISTENING": "Listening...",
             "SPEAKING": "Speaking...",
         }.get(state, state.title()))
-        if state == "ACTIVE":
+        if state == "ACTIVE" and not self._streaming_content:
             self._show_thinking("JASPER is working")
         elif state == "LISTENING":
             self._show_thinking("Listening")
@@ -328,6 +370,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
+        self._streaming_active = False
+        self._streaming_content = ""
+        self._stop_thinking()
         self._append_message("JASPER", f"I couldn't complete that request.\n\n{message}")
         self._set_busy(False)
 
@@ -348,12 +393,8 @@ class MainWindow(QMainWindow):
         self.send_button.setEnabled(not busy)
         self.mic_button.setEnabled(not busy and JASPER_VOICE_ENABLED)
         self.input.setEnabled(not busy)
-        if busy:
-            if not self.thinking_indicator.isVisible():
-                self._show_thinking("JASPER is working")
-        else:
-            self._thinking_timer.stop()
-            self.thinking_indicator.hide()
+        if not busy and not self._streaming_active:
+            self._stop_thinking()
 
     def _show_thinking(self, prefix: str) -> None:
         self._thinking_step = 0
@@ -361,13 +402,17 @@ class MainWindow(QMainWindow):
         self.thinking_indicator.show()
         self._thinking_timer.start()
 
+    def _stop_thinking(self) -> None:
+        self._thinking_timer.stop()
+        self.thinking_indicator.hide()
+
     def _animate_thinking(self) -> None:
-        if not self.busy:
+        if not self.busy or self._streaming_content:
+            self._thinking_timer.stop()
             return
-        base = self.thinking_indicator.text().rstrip(".…")
+        base = self.thinking_indicator.text().rstrip(".")
         self._thinking_step = (self._thinking_step + 1) % 4
-        suffix = "." * self._thinking_step
-        self.thinking_indicator.setText(f"{base}{suffix}")
+        self.thinking_indicator.setText(f"{base}{'.' * self._thinking_step}")
 
     @staticmethod
     def _markdown_to_html(text: str) -> str:
@@ -380,19 +425,23 @@ class MainWindow(QMainWindow):
         return match.group(1) if match else escape(normalized).replace("\n", "<br>")
 
     def _append_message(self, speaker: str, body: str) -> None:
-        is_user = speaker.startswith("You")
-        align = "right" if is_user else "left"
-        label_color = "#b7b7b7" if is_user else "#8ee6a1"
-        speaker_html = escape(speaker)
-        body_html = self._markdown_to_html(body)
+        self._messages.append((speaker, body))
+        self._render_conversation()
 
-        html = (
-            f'<div style="margin:10px 2px 16px 2px; text-align:{align};">'
-            f'<div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div>'
-            f'<div style="color:#eeeeee; font-size:10pt;">{body_html}</div>'
-            "</div>"
-        )
-        self.conversation.append(html)
+    def _render_conversation(self) -> None:
+        blocks: list[str] = []
+        for speaker, body in self._messages:
+            is_user = speaker.startswith("You")
+            align = "right" if is_user else "left"
+            label_color = "#b7b7b7" if is_user else "#8ee6a1"
+            speaker_html = escape(speaker)
+            blocks.append(
+                f'<div style="margin:10px 2px 16px 2px; text-align:{align};">'
+                f'<div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div>'
+                f'<div style="color:#eeeeee; font-size:10pt;">{self._markdown_to_html(body)}</div>'
+                "</div>"
+            )
+        self.conversation.setHtml("".join(blocks))
         cursor = self.conversation.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         self.conversation.setTextCursor(cursor)
@@ -411,7 +460,7 @@ class MainWindow(QMainWindow):
                 return
         if self._tray is not None:
             self._tray.hide()
-        self._thinking_timer.stop()
+        self._stop_thinking()
         self.thread.quit()
         self.thread.wait(3000)
         QApplication.quit()
