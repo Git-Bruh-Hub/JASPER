@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from html import escape
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QThread, Qt, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -12,7 +13,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QStackedWidget,
     QSystemTrayIcon,
     QTextBrowser,
@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         sidebar_title.setObjectName("sidebarTitle")
         sidebar_layout.addWidget(sidebar_title)
         self.page_stack = QStackedWidget()
-        for index, (label, page_name) in enumerate(self.NAV_ITEMS):
+        for index, (label, _) in enumerate(self.NAV_ITEMS):
             button = QPushButton(label)
             button.setProperty("class", "navButton")
             button.setObjectName("navButton")
@@ -105,10 +105,9 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(24, 18, 24, 18)
         content_layout.setSpacing(14)
         self._build_pages()
-        body.addWidget(content, 1)
         content_layout.addWidget(self.page_stack, 1)
+        body.addWidget(content, 1)
         root_layout.addWidget(self._build_status_bar())
-
         self._select_page(0)
 
     def _build_pages(self) -> None:
@@ -140,12 +139,10 @@ class MainWindow(QMainWindow):
         activity_title = QLabel("Agent activity")
         activity_title.setObjectName("activityTitle")
         activity_layout.addWidget(activity_title)
-        self.activity_labels = []
         for text in ("✓ Observation", "✓ Tool call", "✓ Verification"):
             label = QLabel(text)
             label.setProperty("class", "activityItem")
             label.setObjectName("activityItem")
-            self.activity_labels.append(label)
             activity_layout.addWidget(label)
         chat_layout.addWidget(activity)
 
@@ -243,8 +240,7 @@ class MainWindow(QMainWindow):
             return
         self._tray = QSystemTrayIcon(self)
         self._tray.setToolTip("JASPER")
-        menu = self._tray.contextMenu = self._build_tray_menu()
-        self._tray.setContextMenu(menu)
+        self._tray.setContextMenu(self._build_tray_menu())
         self._tray.activated.connect(self._tray_activated)
         self._tray.show()
 
@@ -293,8 +289,6 @@ class MainWindow(QMainWindow):
             spoken, _, answer = content.partition("\n\n")
             self._append_message("You (voice)", spoken)
             self._append_message("JASPER", answer)
-        elif kind == "voice_empty":
-            self._append_message("JASPER", content)
         else:
             self._append_message("JASPER", content)
 
@@ -326,7 +320,7 @@ class MainWindow(QMainWindow):
         gpus = info.get("gpu") or []
         if gpus:
             name = gpus[0].get("name") or "GPU"
-            self.gpu_status.setText(f"{name}")
+            self.gpu_status.setText(name)
         else:
             self.gpu_status.setText("GPU ○")
 
@@ -366,4 +360,5 @@ class MainWindow(QMainWindow):
             self._tray.hide()
         self.thread.quit()
         self.thread.wait(3000)
+        QApplication.quit()
         event.accept()
