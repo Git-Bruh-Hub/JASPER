@@ -73,7 +73,7 @@ QLabel#workspaceHint {
     font-size: 9pt;
 }
 
-QTextEdit#conversation {
+QTextBrowser#conversation {
     background: #181818;
     border: none;
     padding: 6px;
