@@ -131,6 +131,11 @@ class MainWindow(QMainWindow):
         self.conversation.setObjectName("conversation")
         self.conversation.setOpenExternalLinks(True)
         self.conversation.setReadOnly(True)
+        self.conversation.document().setDefaultStyleSheet(
+            "table{border-collapse:collapse;} th,td{border:1px solid #454545;padding:5px 8px;} "
+            "blockquote{border-left:3px solid #555;padding-left:10px;color:#bdbdbd;} "
+            "code{background:#242424;padding:2px 4px;} pre{background:#101010;padding:10px;}"
+        )
         chat_layout.addWidget(self.conversation, 1)
 
         activity = QFrame(objectName="activityFrame")
