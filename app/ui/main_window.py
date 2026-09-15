@@ -3,7 +3,7 @@ from __future__ import annotations
 from html import escape
 
 from PySide6.QtCore import QThread, Qt, Signal, Slot
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -330,14 +330,37 @@ class MainWindow(QMainWindow):
         self.mic_button.setEnabled(not busy and JASPER_VOICE_ENABLED)
         self.input.setEnabled(not busy)
 
+    @staticmethod
+    def _markdown_to_html(text: str) -> str:
+        """Render JASPER's Markdown response as real rich text in the chat."""
+        document = QTextDocument()
+        document.setMarkdown(text)
+        return document.toHtml()
+
     def _append_message(self, speaker: str, body: str) -> None:
-        safe_speaker = escape(speaker)
-        safe_body = escape(body).replace("\n", "<br>")
+        speaker_html = escape(speaker)
+        body_html = self._markdown_to_html(body)
+        is_user = speaker.startswith("You")
+        align = "right" if is_user else "left"
+        bubble_color = "#2b2b2b" if is_user else "#202020"
+        border_color = "#3b3b3b" if is_user else "#303030"
+        label_color = "#c8c8c8" if is_user else "#8ee6a1"
+
         html = (
-            f'<div style="margin:10px 4px 14px 4px;">'
-            f'<div style="color:#999999;font-size:9pt;font-weight:600;">{safe_speaker}</div>'
-            f'<div style="margin-top:3px;color:#eeeeee;">{safe_body}</div>'
-            f'</div>'
+            '<table width="100%" cellspacing="0" cellpadding="0" style="margin:7px 0 10px 0;">'
+            "<tr>"
+            f'<td align="{align}">'
+            f'<table cellspacing="0" cellpadding="0" style="background:{bubble_color}; border:1px solid {border_color}; border-radius:10px;">'
+            "<tr>"
+            '<td style="padding:8px 11px; min-width:80px;">'
+            f'<div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div>'
+            f'<div style="color:#eeeeee; font-size:10pt;">{body_html}</div>'
+            "</td>"
+            "</tr>"
+            "</table>"
+            "</td>"
+            "</tr>"
+            "</table>"
         )
         self.conversation.append(html)
         cursor = self.conversation.textCursor()
