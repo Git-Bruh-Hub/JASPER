@@ -57,9 +57,9 @@ MAX_TOOL_ROUNDS = 5
 
 SYSTEM_FACT_PATTERNS = (
     r"\bwhat (?:cpu|processor) (?:am i|do i) (?:using|have)\b",
-    r"\bwhat (?:cpu|processor) (?:is|do i have)\b",
+    r"\bwhat (?:cpu|processor) is (?:this|my)\b",
     r"\bwhat (?:gpu|graphics card|video card) (?:am i|do i) (?:using|have)\b",
-    r"\bwhat (?:gpu|graphics card|video card) (?:is|do i have)\b",
+    r"\bwhat (?:gpu|graphics card|video card) is (?:this|my)\b",
     r"\bhow much (?:ram|memory) .*\bdo i have\b",
     r"\bwhat (?:ram|memory) do i have\b",
     r"\bhow much (?:storage|disk space) .*\bdo i have\b",
@@ -267,14 +267,28 @@ class Orchestrator:
             self.log.exception("tool failed name=%s", name)
             return json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
 
+    async def _emit_local_response(self, answer: str, on_chunk: Callable[[str], None] | None) -> None:
+        if not on_chunk:
+            return
+        # Deterministic answers are already complete. Emit paragraph-sized chunks so
+        # the desktop UI preserves the same progressive UX as model streaming.
+        parts = re.split(r"(?<=\n)(?=\n)|(?<=\.) (?=[A-Z#])", answer)
+        parts = [part for part in parts if part]
+        if len(parts) <= 1:
+            on_chunk(answer)
+            return
+        import asyncio
+        for part in parts:
+            on_chunk(part)
+            await asyncio.sleep(0.035)
+
     async def respond(self, user_text: str, on_chunk: Callable[[str], None] | None = None) -> str:
         self.memory.add("user", user_text)
         memory_command = self.memory_manager.parse_command(user_text)
         if memory_command is not None:
             answer = self.memory_manager.handle_command(memory_command)
             self.memory.add("assistant", answer)
-            if on_chunk:
-                on_chunk(answer)
+            await self._emit_local_response(answer, on_chunk)
             self.log.info("memory command handled action=%s", memory_command.action)
             return answer
         if _requires_system_observation(user_text):
@@ -282,8 +296,7 @@ class Orchestrator:
             self.log.info("forced system observation for direct fact query")
             answer = _format_system_fact_answer(user_text, info)
             self.memory.add("assistant", answer)
-            if on_chunk:
-                on_chunk(answer)
+            await self._emit_local_response(answer, on_chunk)
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
 
@@ -293,8 +306,7 @@ class Orchestrator:
             answer = render_cpu_explanation(user_text, info)
             if answer is not None:
                 self.memory.add("assistant", answer)
-                if on_chunk:
-                    on_chunk(answer)
+                await self._emit_local_response(answer, on_chunk)
                 self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
                 return answer
 
