@@ -12,6 +12,7 @@ class ModelProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
         keep_alive: str | int = "5m",
         think: bool | None = None,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -23,6 +24,7 @@ class ModelProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
         keep_alive: str | int = "5m",
         think: bool | None = None,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield streaming response chunks from providers that support them."""
         raise NotImplementedError
