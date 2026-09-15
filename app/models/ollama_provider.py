@@ -22,13 +22,14 @@ class OllamaProvider(ModelProvider):
         keep_alive: str | int,
         think: bool | None,
         stream: bool,
+        max_output_tokens: int | None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model or JASPER_MODEL,
             "messages": messages,
             "stream": stream,
             "keep_alive": keep_alive,
-            "options": {"num_predict": JASPER_MAX_OUTPUT_TOKENS},
+            "options": {"num_predict": max_output_tokens or JASPER_MAX_OUTPUT_TOKENS},
         }
         if tools:
             payload["tools"] = tools
@@ -44,6 +45,7 @@ class OllamaProvider(ModelProvider):
         tools: list[dict[str, Any]] | None = None,
         keep_alive: str | int = JASPER_KEEP_ALIVE,
         think: bool | None = JASPER_THINK,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         payload = self._payload(
             messages,
@@ -52,6 +54,7 @@ class OllamaProvider(ModelProvider):
             keep_alive=keep_alive,
             think=think,
             stream=False,
+            max_output_tokens=max_output_tokens,
         )
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(f"{self.host}/api/chat", json=payload)
@@ -69,6 +72,7 @@ class OllamaProvider(ModelProvider):
         tools: list[dict[str, Any]] | None = None,
         keep_alive: str | int = JASPER_KEEP_ALIVE,
         think: bool | None = JASPER_THINK,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         payload = self._payload(
             messages,
@@ -77,6 +81,7 @@ class OllamaProvider(ModelProvider):
             keep_alive=keep_alive,
             think=think,
             stream=True,
+            max_output_tokens=max_output_tokens,
         )
 
         async with httpx.AsyncClient(timeout=180) as client:
