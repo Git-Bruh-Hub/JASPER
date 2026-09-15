@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, AsyncIterator
+
 
 class ModelProvider(ABC):
     @abstractmethod
@@ -12,4 +13,16 @@ class ModelProvider(ABC):
         keep_alive: str | int = "5m",
         think: bool | None = None,
     ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        keep_alive: str | int = "5m",
+        think: bool | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield streaming response chunks from providers that support them."""
         raise NotImplementedError
