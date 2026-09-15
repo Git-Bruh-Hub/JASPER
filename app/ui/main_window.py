@@ -132,25 +132,13 @@ class MainWindow(QMainWindow):
         self.conversation.setOpenExternalLinks(True)
         self.conversation.setReadOnly(True)
         self.conversation.document().setDefaultStyleSheet(
-            "table{border-collapse:collapse;} th,td{border:1px solid #454545;padding:5px 8px;} "
+            "table{border-collapse:collapse;} "
+            "th,td{border:1px solid #454545;padding:5px 8px;} "
             "blockquote{border-left:3px solid #555;padding-left:10px;color:#bdbdbd;} "
-            "code{background:#242424;padding:2px 4px;} pre{background:#101010;padding:10px;}"
+            "code{background:#242424;padding:2px 4px;} "
+            "pre{background:#101010;padding:10px;}"
         )
         chat_layout.addWidget(self.conversation, 1)
-
-        activity = QFrame(objectName="activityFrame")
-        activity_layout = QVBoxLayout(activity)
-        activity_layout.setContentsMargins(12, 10, 12, 10)
-        activity_layout.setSpacing(4)
-        activity_title = QLabel("Agent activity")
-        activity_title.setObjectName("activityTitle")
-        activity_layout.addWidget(activity_title)
-        for text in ("✓ Observation", "✓ Tool call", "✓ Verification"):
-            label = QLabel(text)
-            label.setProperty("class", "activityItem")
-            label.setObjectName("activityItem")
-            activity_layout.addWidget(label)
-        chat_layout.addWidget(activity)
 
         composer = QFrame(objectName="composer")
         composer_layout = QHBoxLayout(composer)
@@ -347,29 +335,17 @@ class MainWindow(QMainWindow):
         return match.group(1) if match else escape(normalized).replace("\n", "<br>")
 
     def _append_message(self, speaker: str, body: str) -> None:
-        speaker_html = escape(speaker)
-        body_html = self._markdown_to_html(body)
         is_user = speaker.startswith("You")
         align = "right" if is_user else "left"
-        bubble_color = "#2b2b2b" if is_user else "#202020"
-        border_color = "#3b3b3b" if is_user else "#303030"
-        label_color = "#c8c8c8" if is_user else "#8ee6a1"
+        label_color = "#b7b7b7" if is_user else "#8ee6a1"
+        speaker_html = escape(speaker)
+        body_html = self._markdown_to_html(body)
 
         html = (
-            '<table width="100%" cellspacing="0" cellpadding="0" style="margin:7px 0 10px 0;">'
-            "<tr>"
-            f'<td align="{align}">'
-            f'<table cellspacing="0" cellpadding="0" style="background:{bubble_color}; border:1px solid {border_color}; border-radius:10px;">'
-            "<tr>"
-            '<td style="padding:8px 11px;">'
+            f'<div style="margin:10px 2px 14px 2px; text-align:{align};">'
             f'<div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div>'
             f'<div style="color:#eeeeee; font-size:10pt;">{body_html}</div>'
-            "</td>"
-            "</tr>"
-            "</table>"
-            "</td>"
-            "</tr>"
-            "</table>"
+            "</div>"
         )
         self.conversation.append(html)
         cursor = self.conversation.textCursor()
