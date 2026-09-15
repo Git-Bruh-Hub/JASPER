@@ -1,11 +1,14 @@
 from typing import Any
+import logging
 import httpx
 from .base import ModelProvider
 from app.core.config import OLLAMA_HOST, JASPER_MODEL, JASPER_KEEP_ALIVE, JASPER_THINK
 
+
 class OllamaProvider(ModelProvider):
     def __init__(self, host: str = OLLAMA_HOST):
         self.host = host.rstrip("/")
+        self.log = logging.getLogger("jasper.models.ollama")
 
     async def chat(
         self,
@@ -30,4 +33,18 @@ class OllamaProvider(ModelProvider):
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(f"{self.host}/api/chat", json=payload)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+
+        def seconds(value: Any) -> float | None:
+            return value / 1_000_000_000 if isinstance(value, (int, float)) else None
+
+        self.log.info(
+            "ollama response model=%s total=%.2fs load=%s prompt=%s eval=%s eval_tokens=%s",
+            data.get("model", model),
+            seconds(data.get("total_duration")) or 0.0,
+            f"{seconds(data.get('load_duration')):.2f}s" if seconds(data.get("load_duration")) is not None else "n/a",
+            f"{seconds(data.get('prompt_eval_duration')):.2f}s" if seconds(data.get("prompt_eval_duration")) is not None else "n/a",
+            f"{seconds(data.get('eval_duration')):.2f}s" if seconds(data.get("eval_duration")) is not None else "n/a",
+            data.get("eval_count", "n/a"),
+        )
+        return data
