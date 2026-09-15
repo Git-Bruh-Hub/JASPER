@@ -216,7 +216,7 @@ def _format_system_fact_answer(question: str, info: dict) -> str:
 
 
 def _response_budget(text: str) -> int:
-    """Choose a generation budget from the user's requested depth."""
+    """Choose a generation budget from the user's requested depth and task type."""
     normalized = " ".join(text.lower().split())
     hardware_explanation = any(term in normalized for term in ("cpu", "processor", "gpu", "graphics card", "ram", "memory", "storage")) and any(
         term in normalized for term in ("explain", "describe", "detail", "detailed", "how does", "what does")
@@ -227,8 +227,10 @@ def _response_budget(text: str) -> int:
         return 1024
     if any(term in normalized for term in ("analyze", "compare", "debug", "design", "plan", "why is", "how can i")):
         return 1024
+    if any(term in normalized for term in ("recommend", "recommendation", "best", "good for", "which .* should", "what .* should i buy")):
+        return 640
     if len(normalized.split()) <= 12:
-        return 384
+        return 512
     return 640
 
 
@@ -270,8 +272,6 @@ class Orchestrator:
     async def _emit_local_response(self, answer: str, on_chunk: Callable[[str], None] | None) -> None:
         if not on_chunk:
             return
-        # Deterministic answers are already complete. Emit paragraph-sized chunks so
-        # the desktop UI preserves the same progressive UX as model streaming.
         parts = re.split(r"(?<=\n)(?=\n)|(?<=\.) (?=[A-Z#])", answer)
         parts = [part for part in parts if part]
         if len(parts) <= 1:
