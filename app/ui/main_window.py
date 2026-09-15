@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape
+import re
 
 from PySide6.QtCore import QThread, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QTextDocument
@@ -332,10 +333,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _markdown_to_html(text: str) -> str:
-        """Render JASPER's Markdown response as real rich text in the chat."""
+        """Render Markdown as rich text without exposing Markdown markers."""
+        normalized = re.sub(r"\\([*_#`~\[\]-])", r"\1", text)
         document = QTextDocument()
-        document.setMarkdown(text)
-        return document.toHtml()
+        document.setMarkdown(normalized)
+        html = document.toHtml()
+        match = re.search(r"<body[^>]*>(.*)</body>", html, flags=re.DOTALL | re.IGNORECASE)
+        return match.group(1) if match else escape(normalized).replace("\n", "<br>")
 
     def _append_message(self, speaker: str, body: str) -> None:
         speaker_html = escape(speaker)
@@ -352,7 +356,7 @@ class MainWindow(QMainWindow):
             f'<td align="{align}">'
             f'<table cellspacing="0" cellpadding="0" style="background:{bubble_color}; border:1px solid {border_color}; border-radius:10px;">'
             "<tr>"
-            '<td style="padding:8px 11px; min-width:80px;">'
+            '<td style="padding:8px 11px;">'
             f'<div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div>'
             f'<div style="color:#eeeeee; font-size:10pt;">{body_html}</div>'
             "</td>"
