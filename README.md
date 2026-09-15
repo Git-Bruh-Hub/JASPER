@@ -180,6 +180,8 @@ Voice → STT → JASPER Core → response → TTS → Voice
 - `SpeechToTextProvider` and `TextToSpeechProvider` abstractions keep providers replaceable.
 - Local STT uses `faster-whisper` with lazy model loading.
 - STT defaults to GPU with automatic CPU fallback when CUDA is unavailable.
+- On Windows, JASPER automatically discovers NVIDIA CUDA runtime wheels inside the active Python environment and configures their DLL directories for the current process. It does not modify the user's permanent Windows PATH.
+- The voice dependency set includes CUDA 12 cuBLAS, CUDA runtime, NVRTC, and cuDNN 9 runtime packages for the current CTranslate2 GPU stack.
 - Audio recording is local and stops after configurable silence or a maximum duration.
 - Windows built-in Speech Synthesis is the default TTS provider, so a neural TTS model is not required for the first voice test.
 - Piper TTS is available as an optional local neural provider.
@@ -220,7 +222,7 @@ for a direct TTS test.
 
 ### STT configuration
 
-`faster-whisper` can run on NVIDIA CUDA or CPU. GPU execution may require the appropriate NVIDIA CUDA/cuDNN runtime libraries for the installed faster-whisper/CTranslate2 version. Keep `JASPER_STT_DEVICE=auto` unless you have a reason to force a device.
+`faster-whisper` can run on NVIDIA CUDA or CPU. The current Windows GPU setup uses CUDA 12 and cuDNN 9 runtime packages installed in the Python environment. JASPER configures their package-local DLL directories automatically before loading Faster-Whisper. Keep `JASPER_STT_DEVICE=auto` unless you have a reason to force a device.
 
 Defaults:
 
