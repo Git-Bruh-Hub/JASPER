@@ -1,4 +1,4 @@
-# JASPER v0.4.0
+# JASPER v0.4.1
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -252,6 +252,37 @@ JASPER_PIPER_CONFIG=data/voices/en_US-lessac-medium.onnx.json
 
 Voice models are external assets and should be stored locally rather than committed to the JASPER repository.
 
-## v0.4 safety boundary
+## v0.4.1 — Voice Quality + Continuous Conversation
 
-Voice is an interface only. Spoken input is converted to text and passed through the same JASPER Core, memory, tool, and permission layers used by typed input. Voice does not bypass permissions and does not gain additional computer-control capabilities.
+v0.4.1 improves the voice layer without bypassing the existing JASPER Core.
+
+### Better multilingual STT control
+
+- `JASPER_STT_LANGUAGE=auto` remains the default for mixed English/Bahasa Malaysia/rojak speech.
+- Common aliases such as `bm`, `malay`, and `bahasa melayu` are normalized to Whisper's `ms` language code when a fixed language is desired.
+- `JASPER_STT_BEAM_SIZE` controls decoding breadth; the default remains `5`.
+- `JASPER_STT_INITIAL_PROMPT` is available as an optional vocabulary/context hint. It is blank by default so users do not accidentally bias recognition.
+
+### Continuous conversation
+
+Use:
+
+```text
+:conversation
+```
+
+JASPER will listen, respond, speak, and listen again. The loop is deliberately bounded:
+
+- Maximum turns: `JASPER_VOICE_CONVERSATION_MAX_TURNS` (default `8`).
+- Repeated empty recordings end the session after `JASPER_VOICE_CONVERSATION_EMPTY_LIMIT` (default `2`).
+- Local stop phrases such as `stop listening`, `goodbye jasper`, and `berhenti jasper` end the loop without sending the phrase to the LLM.
+- The loop is **not** an always-listening service and does **not** use a wake word.
+- Every non-stop utterance still goes through the normal JASPER Orchestrator, memory, tools, and permission checks.
+
+### More natural TTS
+
+Common Markdown formatting in JASPER responses is normalized before speech so the TTS engine does not read formatting markers aloud. Windows TTS voice, rate, and volume can also be configured through `.env`.
+
+### v0.4.1 safety boundary
+
+Continuous conversation only changes how voice input is collected. It does not create new PC-control permissions, background listeners, or autonomous execution paths.
