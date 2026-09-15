@@ -89,18 +89,18 @@ def render_cpu_explanation(question: str, system_info: dict[str, Any]) -> str | 
     if detailed:
         if bm:
             lines.extend([
-                "\n### Spesifikasi yang disahkan",
-                f"| Spesifikasi | Nilai |\n|---|---|\n| Model | {cpu_name} |\n| Architecture | {profile['architecture']} |\n| Core / Thread | {profile['cores']} / {profile['threads']} |\n| Threading | AMD SMT |\n| Base Clock | {profile['base_clock_ghz']:.1f} GHz |\n| Maximum Boost | Up to {profile['max_boost_clock_ghz']:.1f} GHz |\n| L2 Cache | {profile['l2_cache_mb']} MB |\n| L3 Cache | {profile['l3_cache_mb']} MB |\n| TDP | {profile['tdp_w']} W |\n| Socket | {profile['socket']} |",
-                "\n### Kitaran kerja CPU",
-                "1. **Fetch** — mengambil arahan daripada memory.\n2. **Decode** — menentukan maksud arahan tersebut.\n3. **Execute** — melakukan operasi yang diperlukan.\n4. **Write back** — menyimpan atau meneruskan hasil untuk digunakan oleh sistem.",
+                "\n### Spesifikasi yang disahkan\n",
+                f"\n| Spesifikasi | Nilai |\n|---|---|\n| Model | {cpu_name} |\n| Architecture | {profile['architecture']} |\n| Core / Thread | {profile['cores']} / {profile['threads']} |\n| Threading | AMD SMT |\n| Base Clock | {profile['base_clock_ghz']:.1f} GHz |\n| Maximum Boost | Up to {profile['max_boost_clock_ghz']:.1f} GHz |\n| L2 Cache | {profile['l2_cache_mb']} MB |\n| L3 Cache | {profile['l3_cache_mb']} MB |\n| TDP | {profile['tdp_w']} W |\n| Socket | {profile['socket']} |",
+                "\n### Kitaran kerja CPU\n",
+                "\n1. **Fetch** — mengambil arahan daripada memory.\n2. **Decode** — menentukan maksud arahan tersebut.\n3. **Execute** — melakukan operasi yang diperlukan.\n4. **Write back** — menyimpan atau meneruskan hasil untuk digunakan oleh sistem.",
                 "\nNota: penggunaan RAM semasa komputer berjalan ialah **keadaan sistem semasa**, bukan spesifikasi CPU, jadi ia tidak dimasukkan ke dalam jadual CPU.",
             ])
         else:
             lines.extend([
-                "\n### Verified specifications",
-                f"| Specification | Value |\n|---|---|\n| Model | {cpu_name} |\n| Architecture | {profile['architecture']} |\n| Core / Thread | {profile['cores']} / {profile['threads']} |\n| Threading | AMD SMT |\n| Base Clock | {profile['base_clock_ghz']:.1f} GHz |\n| Maximum Boost | Up to {profile['max_boost_clock_ghz']:.1f} GHz |\n| L2 Cache | {profile['l2_cache_mb']} MB |\n| L3 Cache | {profile['l3_cache_mb']} MB |\n| TDP | {profile['tdp_w']} W |\n| Socket | {profile['socket']} |\n| PCIe | {profile['pcie']} |\n| Memory | {profile['memory_type']}, {profile['memory_speed']} |",
-                "\n### CPU instruction cycle",
-                "1. **Fetch** — obtains an instruction from memory.\n2. **Decode** — interprets what the instruction requires.\n3. **Execute** — performs the requested operation.\n4. **Write back** — stores or forwards the result.",
+                "\n### Verified specifications\n",
+                f"\n| Specification | Value |\n|---|---|\n| Model | {cpu_name} |\n| Architecture | {profile['architecture']} |\n| Core / Thread | {profile['cores']} / {profile['threads']} |\n| Threading | AMD SMT |\n| Base Clock | {profile['base_clock_ghz']:.1f} GHz |\n| Maximum Boost | Up to {profile['max_boost_clock_ghz']:.1f} GHz |\n| L2 Cache | {profile['l2_cache_mb']} MB |\n| L3 Cache | {profile['l3_cache_mb']} MB |\n| TDP | {profile['tdp_w']} W |\n| Socket | {profile['socket']} |\n| PCIe | {profile['pcie']} |\n| Memory | {profile['memory_type']}, {profile['memory_speed']} |",
+                "\n### CPU instruction cycle\n",
+                "\n1. **Fetch** — obtains an instruction from memory.\n2. **Decode** — interprets what the instruction requires.\n3. **Execute** — performs the requested operation.\n4. **Write back** — stores or forwards the result.",
                 "\nRAM usage is intentionally not listed as a CPU specification because it is a live system-state measurement, not a property of the processor model.",
             ])
 
