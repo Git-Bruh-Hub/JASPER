@@ -3,7 +3,7 @@ from __future__ import annotations
 from html import escape
 import re
 
-from PySide6.QtCore import QThread, Qt, Signal, Slot
+from PySide6.QtCore import QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
@@ -48,6 +48,10 @@ class MainWindow(QMainWindow):
         self.busy = False
         self._tray: QSystemTrayIcon | None = None
         self.nav_buttons: list[QPushButton] = []
+        self._thinking_step = 0
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.setInterval(450)
+        self._thinking_timer.timeout.connect(self._animate_thinking)
         self.setWindowTitle("JASPER")
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
@@ -104,7 +108,7 @@ class MainWindow(QMainWindow):
         content = QFrame(objectName="contentFrame")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(24, 18, 24, 18)
-        content_layout.setSpacing(14)
+        content_layout.setSpacing(10)
         self._build_pages()
         content_layout.addWidget(self.page_stack, 1)
         body.addWidget(content, 1)
@@ -115,7 +119,7 @@ class MainWindow(QMainWindow):
         self.chat_page = QWidget()
         chat_layout = QVBoxLayout(self.chat_page)
         chat_layout.setContentsMargins(0, 0, 0, 0)
-        chat_layout.setSpacing(12)
+        chat_layout.setSpacing(8)
 
         header = QHBoxLayout()
         title = QLabel("Conversation / Task")
@@ -132,13 +136,28 @@ class MainWindow(QMainWindow):
         self.conversation.setOpenExternalLinks(True)
         self.conversation.setReadOnly(True)
         self.conversation.document().setDefaultStyleSheet(
-            "table{border-collapse:collapse;} "
-            "th,td{border:1px solid #454545;padding:5px 8px;} "
-            "blockquote{border-left:3px solid #555;padding-left:10px;color:#bdbdbd;} "
+            "body{margin:0;padding:0;} "
+            "h1{font-size:20pt;margin:12px 0 8px 0;} "
+            "h2{font-size:16pt;margin:12px 0 7px 0;} "
+            "h3{font-size:13pt;margin:10px 0 6px 0;} "
+            "h4,h5,h6{font-size:11pt;margin:9px 0 5px 0;} "
+            "p{margin:5px 0;line-height:1.35;} "
+            "ul,ol{margin-top:5px;margin-bottom:7px;} "
+            "li{margin:2px 0;} "
+            "table{border-collapse:collapse;margin:8px 0;} "
+            "th,td{border:1px solid #454545;padding:6px 9px;} "
+            "th{background:#242424;font-weight:600;} "
+            "blockquote{border-left:3px solid #555;padding-left:11px;color:#bdbdbd;margin:8px 0;} "
             "code{background:#242424;padding:2px 4px;} "
-            "pre{background:#101010;padding:10px;}"
+            "pre{background:#101010;border:1px solid #282828;padding:10px;margin:8px 0;} "
+            "a{color:#8ee6a1;}"
         )
         chat_layout.addWidget(self.conversation, 1)
+
+        self.thinking_indicator = QLabel("JASPER is working…")
+        self.thinking_indicator.setObjectName("thinkingIndicator")
+        self.thinking_indicator.hide()
+        chat_layout.addWidget(self.thinking_indicator)
 
         composer = QFrame(objectName="composer")
         composer_layout = QHBoxLayout(composer)
@@ -274,7 +293,7 @@ class MainWindow(QMainWindow):
         if self.busy or not JASPER_VOICE_ENABLED:
             return
         self._set_busy(True)
-        self.workspace_hint.setText("Listening...")
+        self._show_thinking("Listening")
         self.request_voice.emit()
 
     @Slot(str, str)
@@ -296,6 +315,12 @@ class MainWindow(QMainWindow):
             "LISTENING": "Listening...",
             "SPEAKING": "Speaking...",
         }.get(state, state.title()))
+        if state == "ACTIVE":
+            self._show_thinking("JASPER is working")
+        elif state == "LISTENING":
+            self._show_thinking("Listening")
+        elif state == "SPEAKING":
+            self._show_thinking("Speaking")
 
     @Slot()
     def _on_finished(self) -> None:
@@ -323,6 +348,26 @@ class MainWindow(QMainWindow):
         self.send_button.setEnabled(not busy)
         self.mic_button.setEnabled(not busy and JASPER_VOICE_ENABLED)
         self.input.setEnabled(not busy)
+        if busy:
+            if not self.thinking_indicator.isVisible():
+                self._show_thinking("JASPER is working")
+        else:
+            self._thinking_timer.stop()
+            self.thinking_indicator.hide()
+
+    def _show_thinking(self, prefix: str) -> None:
+        self._thinking_step = 0
+        self.thinking_indicator.setText(prefix)
+        self.thinking_indicator.show()
+        self._thinking_timer.start()
+
+    def _animate_thinking(self) -> None:
+        if not self.busy:
+            return
+        base = self.thinking_indicator.text().rstrip(".…")
+        self._thinking_step = (self._thinking_step + 1) % 4
+        suffix = "." * self._thinking_step
+        self.thinking_indicator.setText(f"{base}{suffix}")
 
     @staticmethod
     def _markdown_to_html(text: str) -> str:
@@ -342,7 +387,7 @@ class MainWindow(QMainWindow):
         body_html = self._markdown_to_html(body)
 
         html = (
-            f'<div style="margin:10px 2px 14px 2px; text-align:{align};">'
+            f'<div style="margin:10px 2px 16px 2px; text-align:{align};">'
             f'<div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div>'
             f'<div style="color:#eeeeee; font-size:10pt;">{body_html}</div>'
             "</div>"
@@ -366,6 +411,7 @@ class MainWindow(QMainWindow):
                 return
         if self._tray is not None:
             self._tray.hide()
+        self._thinking_timer.stop()
         self.thread.quit()
         self.thread.wait(3000)
         QApplication.quit()
