@@ -12,46 +12,55 @@ from app.tools.registry import ToolRegistry
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
 
-Communication:
-- Be helpful, natural, calm, conversational, and practical.
-- Give the answer first, then useful explanation or detail.
-- Adapt depth to the request.
-- Use Markdown when it improves readability.
-- Default response language is English; use Bahasa Malaysia when explicitly requested or clearly established.
+Communication and personality:
+- Be helpful, natural, calm, conversational, and easy to understand.
+- Be direct and practical. Give the answer first, then useful explanation or detail.
+- Adapt depth to the user's request: concise for simple questions, detailed when asked.
+- Do not generate unnecessary repetition just to make an answer look detailed.
+- Use clear headings, bullets, numbered lists, tables, quotes, code blocks, and other Markdown formatting when they genuinely improve readability.
+- Never expose raw Markdown markers such as ###, **, or * as plain text when normal Markdown can represent the formatting.
+- Do not overuse emojis, filler, or repeated follow-up offers.
+- Keep a consistent, friendly assistant persona without pretending to be human or claiming feelings or experiences you do not have.
 - Understand English, Bahasa Malaysia, casual Malay, slang, typos, and BM-English rojak.
+- Default response language is English.
+- Respond in Bahasa Malaysia when the user explicitly asks for BM/Malay, or clearly establishes BM as the desired response language.
+- If the user mixes English and Bahasa Malaysia without requesting a language, default to English.
+- If the user explicitly asks for a response language, follow that request for the response.
+- Do not confuse the speech-recognition language with the response language: STT may use Malay (`ms`) while JASPER can still respond in English.
 
 Accuracy:
 - Do not invent facts, values, capabilities, or actions.
-- Distinguish live observations from reference specifications and general knowledge.
-- When a local tool can verify a fact, use it instead of guessing.
-- For hardware explanations, supplied live observations and exact-model reference specifications are authoritative.
-- Do not override supplied hardware values with remembered values.
-- AMD Ryzen uses SMT (Simultaneous Multithreading), not Intel's Hyper-Threading branding.
-- Distinguish base clock from maximum boost clock.
-- Do not present a reference specification as a live measurement.
+- Distinguish observed facts from reference specifications, assumptions, and general knowledge.
+- When a local tool can directly verify a fact, use the tool instead of guessing.
+- If information is uncertain or unavailable, say so clearly rather than filling the gap.
+- For hardware explanations, the live system observations and exact-model reference specifications supplied in the hardware context are authoritative for this machine.
+- Do not override a supplied hardware value with a remembered value.
+- Do not use Intel-specific terminology for AMD CPUs. AMD Ryzen processors use SMT (Simultaneous Multithreading), not Intel's Hyper-Threading branding.
+- Distinguish base clock from maximum boost clock. Never call the base clock the boost clock.
+- Do not present a reference specification as a live measurement. Clearly distinguish static specifications from current usage/state.
 
 Tool use:
-- You have read-only local tools.
-- Use tools when current information from this computer is required.
+- You have access to read-only local tools.
+- Use a tool when the user's request requires current information from this computer.
+- Do not guess information that a tool can directly verify.
+- After receiving tool results, answer using those results.
 - Never claim a tool ran unless its result confirms it.
 
 Safety:
 - Never invent filesystem contents or system state.
-- Do not attempt actions outside the tools provided.
+- Do not attempt actions outside the tools provided to you.
 - The current tool policy is read-only.
 """
 
 MAX_TOOL_ROUNDS = 5
 
-# These are intentionally conservative. Direct fact questions are answered by JASPER's
-# observation layer, not by the language model.
 SYSTEM_FACT_PATTERNS = (
-    r"\bwhat (?:is|are) (?:my|this) (?:cpu|processor)\b",
     r"\bwhat (?:cpu|processor) (?:am i|do i) (?:using|have)\b",
-    r"\bwhat (?:is|are) (?:my|this) (?:gpu|graphics card|video card)\b",
+    r"\bwhat (?:cpu|processor) (?:is|do i have)\b",
     r"\bwhat (?:gpu|graphics card|video card) (?:am i|do i) (?:using|have)\b",
+    r"\bwhat (?:gpu|graphics card|video card) (?:is|do i have)\b",
     r"\bhow much (?:ram|memory) .*\bdo i have\b",
-    r"\bwhat (?:ram|memory) .*\bdo i have\b",
+    r"\bwhat (?:ram|memory) do i have\b",
     r"\bhow much (?:storage|disk space) .*\bdo i have\b",
     r"\bwhat (?:drives|storage drives) do i have\b",
     r"\bwhat model is currently loaded in ollama\b",
@@ -80,13 +89,11 @@ SYSTEM_GROUNDING_TERMS = (
 
 
 def _requires_system_observation(text: str) -> bool:
+    """Return True when the user is asking for direct facts about this live machine."""
     normalized = " ".join(text.lower().split())
     if any(re.search(pattern, normalized) for pattern in SYSTEM_FACT_PATTERNS):
         return True
-
-    matched_categories = sum(
-        any(term in normalized for term in terms) for terms in SYSTEM_FACT_TERMS.values()
-    )
+    matched_categories = sum(any(term in normalized for term in terms) for terms in SYSTEM_FACT_TERMS.values())
     has_live_context = any(
         re.search(rf"\b{re.escape(context)}\b", normalized) if " " not in context else context in normalized
         for context in SYSTEM_LIVE_CONTEXT
@@ -100,6 +107,7 @@ def _requires_system_observation(text: str) -> bool:
 
 
 def _requires_system_grounding(text: str) -> bool:
+    """Return True when a hardware explanation should receive live machine facts."""
     normalized = " ".join(text.lower().split())
     has_hardware = any(any(term in normalized for term in terms) for terms in SYSTEM_FACT_TERMS.values())
     has_live_context = any(
@@ -116,6 +124,7 @@ def _system_observation_tool_result(registry: ToolRegistry, permissions: Permiss
 
 
 def _cpu_reference_facts(info: dict) -> dict:
+    """Return trusted static reference specifications for a recognized CPU model."""
     name = str(info.get("cpu") or "").lower()
     if "ryzen 5 5600x" not in name:
         return {}
@@ -136,9 +145,15 @@ def _cpu_reference_facts(info: dict) -> dict:
 
 
 def _grounding_context(question: str, info: dict) -> str:
+    """Build a compact, authoritative hardware context for the model."""
     q = question.lower()
     observed: dict[str, Any] = {}
-    if "cpu" in q or "processor" in q:
+    asks_cpu = "cpu" in q or "processor" in q
+    asks_gpu = "gpu" in q or "graphics card" in q or "video card" in q
+    asks_ram = "ram" in q or "memory" in q
+    asks_storage = "storage" in q or "disk space" in q or "drive" in q
+    asks_ollama = "ollama" in q
+    if asks_cpu:
         observed["live_observations"] = {
             "cpu_name": info.get("cpu"),
             "cpu_details": info.get("cpu_details", {}),
@@ -148,90 +163,89 @@ def _grounding_context(question: str, info: dict) -> str:
         reference = _cpu_reference_facts(info)
         if reference:
             observed["reference_specifications_for_this_exact_model"] = reference
-    if "gpu" in q or "graphics card" in q or "video card" in q:
+    if asks_gpu:
         observed["gpu"] = info.get("gpu") or []
-    if "ram" in q or "memory" in q:
+    if asks_ram:
         observed["ram_total_gb"] = info.get("ram_total_gb")
         observed["ram_available_gb"] = info.get("ram_available_gb")
         observed["ram_used_percent"] = info.get("ram_used_percent")
-    if "storage" in q or "disk space" in q or "drive" in q:
+    if asks_storage:
         observed["storage"] = info.get("storage") or []
-    if "ollama" in q:
+    if asks_ollama:
         observed["ollama"] = info.get("ollama") or {}
     return (
-        "AUTHORITATIVE HARDWARE CONTEXT. Use supplied values exactly. Live observations describe this computer now. "
+        "AUTHORITATIVE HARDWARE CONTEXT. Use the supplied values exactly. Live observations describe this computer right now. "
         "Reference specifications describe the exact identified CPU model. Do not substitute remembered values. "
-        "Do not call a base clock a boost clock. For AMD Ryzen, call 12-thread capability SMT, not Hyper-Threading. "
+        "Do not call a base clock a boost clock. For AMD Ryzen, call the 12-thread capability SMT, not Hyper-Threading. "
         "Current RAM usage is a live state value, not a CPU specification.\n\n"
         + json.dumps(observed, ensure_ascii=False, indent=2, default=str)
     )
 
 
 def _format_system_fact_answer(question: str, info: dict) -> str:
-    """Format deterministic system facts without an LLM."""
+    """Answer direct hardware/runtime questions only from observed values."""
     q = question.lower()
     sections: list[str] = []
-
     asks_cpu = "cpu" in q or "processor" in q
     asks_gpu = "gpu" in q or "graphics card" in q or "video card" in q
     asks_ram = "ram" in q or "memory" in q
     asks_storage = "storage" in q or "disk space" in q or "drive" in q
     asks_ollama = "ollama" in q and ("model" in q or "vram" in q)
-
     if asks_cpu:
         cpu = info.get("cpu")
-        sections.append(f"Your CPU is **{cpu}**." if cpu else "I couldn't determine your CPU from the system inspection tool.")
-
+        sections.append(f"CPU: **{cpu}**" if cpu else "CPU: unavailable from the system inspection tool.")
     if asks_gpu:
         gpus = info.get("gpu") or []
         if not gpus:
-            sections.append("I couldn't detect an NVIDIA GPU from the system inspection tool.")
+            sections.append("GPU: I couldn't detect an NVIDIA GPU from the system inspection tool.")
         else:
+            gpu_lines = []
             for gpu in gpus:
                 name = gpu.get("name") or "Unknown GPU"
                 vram = gpu.get("vram_total_gb")
-                suffix = f" with **{vram:g} GB VRAM**." if isinstance(vram, (int, float)) else "."
-                sections.append(f"Your GPU is **{name}**{suffix}")
-
+                suffix = f" — **{vram:g} GB** VRAM" if isinstance(vram, (int, float)) else ""
+                gpu_lines.append(f"**{name}**{suffix}")
+            sections.append("GPU: " + "; ".join(gpu_lines))
     if asks_ram:
         total = info.get("ram_total_gb")
         available = info.get("ram_available_gb")
         used = info.get("ram_used_percent")
         if isinstance(total, (int, float)):
-            sections.append(f"You have **{total:g} GB RAM** total, with **{available:g} GB** available ({used:g}% used).")
+            sections.append(f"RAM: **{total:g} GB** total, **{available:g} GB** available ({used:g}% used).")
         else:
-            sections.append("I couldn't determine your RAM from the system inspection tool.")
-
+            sections.append("RAM: I couldn't determine it from the system inspection tool.")
     if asks_storage:
         drives = info.get("storage") or []
         if not drives:
-            sections.append("I couldn't detect any mounted storage volumes.")
+            sections.append("Storage: I couldn't detect any mounted storage volumes.")
         else:
             sections.append("Storage:\n" + "\n".join(
-                f"- **{d['path']}** — **{d['total_gb']:g} GB** total, **{d['free_gb']:g} GB** free, **{d['used_gb']:g} GB** used."
-                for d in drives
+                f"- **{drive['path']}** — **{drive['total_gb']:g} GB** total, **{drive['free_gb']:g} GB** free, **{drive['used_gb']:g} GB** used."
+                for drive in drives
             ))
-
     if asks_ollama:
         models = (info.get("ollama") or {}).get("models") or []
         if not models:
             sections.append("Ollama: no model is currently loaded.")
         else:
-            lines = []
-            for model in models:
-                name = model.get("name") or "Unknown model"
-                vram = model.get("vram_gb")
-                lines.append(f"- **{name}** — **{vram:g} GB** VRAM" if isinstance(vram, (int, float)) else f"- **{name}** — VRAM usage unavailable")
-            sections.append("Ollama:\n" + "\n".join(lines))
-
-    return "\n\n".join(sections) if sections else "I inspected the system, but I couldn't map that question to a supported system fact."
+            sections.append("Ollama:\n" + "\n".join(
+                f"- **{model.get('name', 'Unknown model')}** — **{model.get('vram_gb', 'VRAM usage unavailable')} GB** VRAM"
+                for model in models
+            ))
+    return "\n".join(sections) if sections else "I inspected the system, but I couldn't map that question to a supported system fact."
 
 
 def _response_budget(text: str) -> int:
+    """Choose a generation budget from the user's requested depth."""
     normalized = " ".join(text.lower().split())
-    detailed = any(p in normalized for p in ("in detail", "detailed", "thorough", "deep dive", "comprehensive", "step by step", "explain fully"))
-    complex_request = any(p in normalized for p in ("analyze", "compare", "debug", "design", "plan", "why is", "how can i"))
-    if detailed or complex_request:
+    hardware_explanation = any(term in normalized for term in ("cpu", "processor", "gpu", "graphics card", "ram", "memory", "storage")) and any(
+        term in normalized for term in ("explain", "describe", "detail", "detailed", "how does", "what does")
+    )
+    if hardware_explanation and not any(term in normalized for term in ("in detail", "thorough", "comprehensive", "step by step", "deep dive")):
+        return 640
+    if any(term in normalized for term in ("in detail", "detailed", "thorough", "deep dive", "comprehensive", "step by step", "explain fully")):
+        return 1024
+    if any(term in normalized for term in ("analyze", "compare", "debug", "design", "plan", "why is", "how can i")):
         return 1024
     if len(normalized.split()) <= 12:
         return 384
@@ -283,8 +297,6 @@ class Orchestrator:
                 on_chunk(answer)
             self.log.info("memory command handled action=%s", memory_command.action)
             return answer
-
-        # Deterministic current-system facts never go through the LLM.
         if _requires_system_observation(user_text):
             info = _system_observation_tool_result(self.registry, self.permissions)
             self.log.info("forced system observation for direct fact query")
@@ -294,33 +306,25 @@ class Orchestrator:
                 on_chunk(answer)
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
-
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
         messages.extend({"role": role, "content": content} for role, content in self.memory.recent(MAX_HISTORY_MESSAGES))
-
         if _requires_system_grounding(user_text):
             info = _system_observation_tool_result(self.registry, self.permissions)
             messages.append({"role": "system", "content": _grounding_context(user_text, info)})
             self.log.info("added live system grounding for hardware explanation")
-
         provider, model = self.models.provider_for(user_text)
         tools = self._tool_schemas()
         max_output_tokens = _response_budget(user_text)
         self.log.info("response budget=%s tokens", max_output_tokens)
-
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
             if on_chunk is None:
                 response = await provider.chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens)
                 message = response.get("message", {})
             else:
-                message, response = await self._stream_model_round(
-                    provider, messages, model=model, tools=tools,
-                    max_output_tokens=max_output_tokens, on_chunk=on_chunk,
-                )
-
+                message, response = await self._stream_model_round(provider, messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk)
             tool_calls = message.get("tool_calls") or []
             messages.append(message)
             if not tool_calls:
@@ -328,7 +332,6 @@ class Orchestrator:
                 self.memory.add("assistant", answer)
                 self.log.info("chat completed model=%s tool_rounds=%s", model, round_number - 1)
                 return answer
-
             for call in tool_calls:
                 try:
                     name = (call.get("function") or {}).get("name", "unknown")
@@ -337,26 +340,13 @@ class Orchestrator:
                     self.log.exception("tool request rejected name=%s", name)
                     result = json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
                 messages.append({"role": "tool", "tool_name": name, "content": result})
-
         raise RuntimeError(f"Tool loop exceeded {MAX_TOOL_ROUNDS} rounds; request stopped for safety.")
 
-    async def _stream_model_round(
-        self,
-        provider,
-        messages: list[dict[str, Any]],
-        *,
-        model: str,
-        tools: list[dict[str, Any]],
-        max_output_tokens: int,
-        on_chunk: Callable[[str], None],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def _stream_model_round(self, provider, messages: list[dict[str, Any]], *, model: str, tools: list[dict[str, Any]], max_output_tokens: int, on_chunk: Callable[[str], None]) -> tuple[dict[str, Any], dict[str, Any]]:
         content_parts: list[str] = []
         final_chunk: dict[str, Any] = {}
         final_tool_calls: list[dict[str, Any]] = []
-
-        async for chunk in provider.stream_chat(
-            messages, model=model, tools=tools, max_output_tokens=max_output_tokens
-        ):
+        async for chunk in provider.stream_chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens):
             final_chunk = chunk
             message = chunk.get("message") or {}
             piece = message.get("content") or ""
@@ -365,7 +355,6 @@ class Orchestrator:
                 on_chunk(piece)
             if message.get("tool_calls"):
                 final_tool_calls = message.get("tool_calls") or []
-
         final_message = dict(final_chunk.get("message") or {})
         if content_parts:
             final_message["content"] = "".join(content_parts)
