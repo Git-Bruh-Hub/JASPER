@@ -17,6 +17,7 @@ class JasperWorker(QObject):
     """Runs JASPER work away from the Qt GUI thread."""
 
     response_ready = Signal(str, str)  # kind, content
+    response_stream = Signal(str)  # incremental assistant text
     status_changed = Signal(str)
     system_status_ready = Signal(dict)
     error = Signal(str)
@@ -36,11 +37,15 @@ class JasperWorker(QObject):
             self.log.exception("System status refresh failed")
             self.error.emit(f"System status unavailable: {exc}")
 
+    def _emit_stream_chunk(self, chunk: str) -> None:
+        if chunk:
+            self.response_stream.emit(chunk)
+
     @Slot(str)
     def send_text(self, text: str) -> None:
         self.status_changed.emit("ACTIVE")
         try:
-            answer = asyncio.run(self.jasper.respond(text))
+            answer = asyncio.run(self.jasper.respond(text, on_chunk=self._emit_stream_chunk))
             self.response_ready.emit("text", answer)
         except Exception as exc:
             self.log.exception("Desktop text request failed")
