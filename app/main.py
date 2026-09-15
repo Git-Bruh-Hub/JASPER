@@ -5,12 +5,19 @@ from app.core.config import (
     JASPER_PIPER_CONFIG,
     JASPER_PIPER_MODEL,
     JASPER_PIPER_USE_CUDA,
+    JASPER_STT_BEAM_SIZE,
     JASPER_STT_CPU_COMPUTE_TYPE,
     JASPER_STT_DEVICE,
     JASPER_STT_GPU_COMPUTE_TYPE,
+    JASPER_STT_INITIAL_PROMPT,
     JASPER_STT_LANGUAGE,
     JASPER_STT_MODEL,
     JASPER_TTS_PROVIDER,
+    JASPER_TTS_RATE,
+    JASPER_TTS_VOLUME,
+    JASPER_TTS_VOICE,
+    JASPER_VOICE_CONVERSATION_EMPTY_LIMIT,
+    JASPER_VOICE_CONVERSATION_MAX_TURNS,
     JASPER_VOICE_ENABLED,
     JASPER_VOICE_MIN_SECONDS,
     JASPER_VOICE_RECORD_MAX_SECONDS,
@@ -85,10 +92,16 @@ def build_voice_manager() -> VoiceManager:
         gpu_compute_type=JASPER_STT_GPU_COMPUTE_TYPE,
         cpu_compute_type=JASPER_STT_CPU_COMPUTE_TYPE,
         language=JASPER_STT_LANGUAGE,
+        beam_size=JASPER_STT_BEAM_SIZE,
+        initial_prompt=JASPER_STT_INITIAL_PROMPT,
     )
 
     if JASPER_TTS_PROVIDER == "windows":
-        tts = WindowsSpeechTTS()
+        tts = WindowsSpeechTTS(
+            voice=JASPER_TTS_VOICE,
+            rate=JASPER_TTS_RATE,
+            volume=JASPER_TTS_VOLUME,
+        )
     elif JASPER_TTS_PROVIDER == "piper":
         tts = PiperTTS(
             JASPER_PIPER_MODEL,
@@ -113,18 +126,24 @@ def build_voice_manager() -> VoiceManager:
     )
 
 
+def print_voice_turn(turn_number: int, user_text: str, answer: str) -> None:
+    print(f"You (voice {turn_number}): {user_text}")
+    print(f"JASPER: {answer}\n")
+
+
 async def main():
     setup_logging()
     log = logging.getLogger("jasper")
     jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
     voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
-    print("JASPER v0.4.0")
+    print("JASPER v0.4.2")
     print("Tool calling + explicit long-term memory enabled.")
     if voice:
-        print("Voice enabled. Use ':voice' to speak or ':speak <text>' for direct TTS.")
+        print("Voice enabled. Use ':voice' for one turn, ':conversation' for continuous conversation, or ':speak <text>'.")
     else:
         print("Voice disabled. Set JASPER_VOICE_ENABLED=true to enable it.")
+    print("Desktop workspace: python -m app.desktop")
     print("Type 'exit' to quit.\n")
 
     while True:
@@ -153,6 +172,25 @@ async def main():
             except Exception as exc:
                 log.exception("Voice request failed")
                 print(f"JASPER: Voice request failed: {exc}\n")
+            continue
+
+        if user_text.lower() == ":conversation":
+            if voice is None:
+                print("JASPER: Voice is disabled. Enable JASPER_VOICE_ENABLED in .env and restart.\n")
+                continue
+            try:
+                print("JASPER: Conversation mode started. Say 'stop listening' to end it.\n")
+                turns = await voice.run_conversation(
+                    jasper.respond,
+                    max_turns=JASPER_VOICE_CONVERSATION_MAX_TURNS,
+                    empty_limit=JASPER_VOICE_CONVERSATION_EMPTY_LIMIT,
+                    on_listen_start=lambda turn: print(f"JASPER: Listening (turn {turn})..."),
+                    on_turn=print_voice_turn,
+                )
+                print(f"JASPER: Conversation mode ended after {len(turns)} response(s).\n")
+            except Exception as exc:
+                log.exception("Voice conversation failed")
+                print(f"JASPER: Voice conversation failed: {exc}\n")
             continue
 
         if user_text.lower().startswith(":speak"):

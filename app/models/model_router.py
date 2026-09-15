@@ -4,23 +4,30 @@ from app.core.config import JASPER_MODEL, JASPER_FAST_MODEL
 
 
 class ModelRouter:
-    """Small heuristic router for local models.
+    """Route ordinary chat to the fast local model and reserve the main model for harder work."""
 
-    Fast model: everyday chat and short/simple requests.
-    Main model: tools, coding, planning, reasoning, and requests that look complex.
-    """
+    _COMPLEX_MARKERS = (
+        "analyze",
+        "analysis",
+        "compare",
+        "debug",
+        "code",
+        "program",
+        "design",
+        "plan",
+        "planning",
+        "reason through",
+        "research",
+        "in depth",
+        "deep dive",
+        "comprehensive",
+        "step by step",
+    )
 
     def __init__(self):
         self.local = OllamaProvider()
 
     def provider_for(self, task: str) -> tuple[ModelProvider, str]:
         text = task.lower().strip()
-        complex_markers = (
-            "analyze", "analysis", "compare", "debug", "code", "program",
-            "plan", "planning", "reason", "research", "explain in depth",
-            "step by step", "calculate", "why", "how should", "tool",
-            "file", "folder", "directory", "computer", "cpu", "ram",
-            "windows", "system", "check my", "find in", "read",
-        )
-        is_complex = len(text) > 280 or any(marker in text for marker in complex_markers)
+        is_complex = len(text) > 320 or any(marker in text for marker in self._COMPLEX_MARKERS)
         return self.local, (JASPER_MODEL if is_complex else JASPER_FAST_MODEL)

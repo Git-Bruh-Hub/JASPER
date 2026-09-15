@@ -1,4 +1,8 @@
-from app.core.orchestrator import _format_system_fact_answer, _requires_system_observation
+from app.core.orchestrator import (
+    _format_system_fact_answer,
+    _requires_system_grounding,
+    _requires_system_observation,
+)
 
 
 def test_direct_hardware_questions_require_observation():
@@ -6,6 +10,14 @@ def test_direct_hardware_questions_require_observation():
     assert _requires_system_observation("How much RAM and storage do I have?")
     assert _requires_system_observation("What model is currently loaded in Ollama, and how much VRAM is it using?")
     assert not _requires_system_observation("Explain what RAM does.")
+
+
+def test_hardware_explanations_require_live_grounding():
+    assert _requires_system_grounding("Explain my CPU in detail.")
+    assert _requires_system_grounding("Tell me about my GPU.")
+    assert _requires_system_grounding("Describe my PC RAM specifications.")
+    assert not _requires_system_grounding("Explain what a CPU does.")
+    assert not _requires_system_grounding("What CPU should I buy for gaming?")
 
 
 def test_hardware_answer_uses_observed_values_only():

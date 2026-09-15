@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 import subprocess
@@ -8,7 +9,6 @@ try:
     import winreg
 except ImportError:  # pragma: no cover - Windows only
     winreg = None
-from pathlib import Path
 
 import httpx
 import psutil
@@ -32,6 +32,53 @@ def _windows_cpu_name() -> str | None:
             return value or None
     except (FileNotFoundError, OSError):
         return None
+
+
+def _windows_cpu_details() -> dict:
+    """Read fixed, read-only CPU facts from Windows WMI."""
+    if os.name != "nt":
+        return {}
+
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        (
+            "Get-CimInstance Win32_Processor | Select-Object -First 1 "
+            "Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,L2CacheSize,L3CacheSize "
+            "| ConvertTo-Json -Compress"
+        ),
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return {}
+
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return {}
+
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    details: dict[str, object] = {}
+    for key in ("Name", "NumberOfCores", "NumberOfLogicalProcessors", "MaxClockSpeed", "L2CacheSize", "L3CacheSize"):
+        if key in payload and payload[key] is not None:
+            details[key] = payload[key]
+    return details
 
 
 def _nvidia_gpus() -> list[dict]:
@@ -98,8 +145,6 @@ def _storage_devices() -> list[dict]:
     drives: list[dict] = []
     seen: set[str] = set()
 
-    # On Windows, psutil.disk_partitions() gives mounted volumes. On other
-    # platforms, keep a useful fallback to the root filesystem.
     try:
         partitions = psutil.disk_partitions(all=False)
     except Exception:
@@ -153,10 +198,7 @@ def _ollama_models() -> dict:
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError):
-        return {
-            "available": False,
-            "models": [],
-        }
+        return {"available": False, "models": []}
 
     models = []
     for item in payload.get("models", []):
@@ -174,10 +216,7 @@ def _ollama_models() -> dict:
             }
         )
 
-    return {
-        "available": True,
-        "models": models,
-    }
+    return {"available": True, "models": models}
 
 
 def get_system_info() -> dict:
@@ -188,6 +227,7 @@ def get_system_info() -> dict:
     """
     vm = psutil.virtual_memory()
     storage = _storage_devices()
+    cpu_details = _windows_cpu_details()
 
     cpu_name = _windows_cpu_name() or platform.processor() or platform.machine()
     gpus = _nvidia_gpus()
@@ -198,6 +238,7 @@ def get_system_info() -> dict:
         "python": platform.python_version(),
         "architecture": platform.machine(),
         "cpu": cpu_name,
+        "cpu_details": cpu_details,
         "cpu_logical_cores": psutil.cpu_count(logical=True),
         "cpu_physical_cores": psutil.cpu_count(logical=False),
         "ram_total_gb": round(vm.total / BYTES_PER_GB, 2),
@@ -205,7 +246,6 @@ def get_system_info() -> dict:
         "ram_used_percent": vm.percent,
         "gpu": gpus,
         "storage": storage,
-        # Keep the old key for compatibility with v0.2.2 consumers.
         "system_drive": storage[0] if storage else None,
         "ollama": _ollama_models(),
     }

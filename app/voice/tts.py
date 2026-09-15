@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import tempfile
 import wave
 from pathlib import Path
 
 from app.voice.base import TextToSpeechProvider
+
+
+def prepare_speech_text(text: str) -> str:
+    """Convert common JASPER formatting into text that sounds natural aloud."""
+    text = text.strip()
+    if not text:
+        return ""
+
+    # Keep the spoken response readable without making the model change its
+    # normal text formatting for the console.
+    text = re.sub(r"`{1,3}", "", text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"__(.*?)__", r"\1", text)
+    text = re.sub(r"~~(.*?)~~", r"\1", text)
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 class WindowsSpeechTTS(TextToSpeechProvider):
@@ -18,7 +38,7 @@ class WindowsSpeechTTS(TextToSpeechProvider):
         self.volume = max(0, min(100, int(volume)))
 
     def speak(self, text: str) -> None:
-        text = text.strip()
+        text = prepare_speech_text(text)
         if not text:
             return
 
@@ -84,7 +104,7 @@ class PiperTTS(TextToSpeechProvider):
         return self._voice
 
     def speak(self, text: str) -> None:
-        text = text.strip()
+        text = prepare_speech_text(text)
         if not text:
             return
 

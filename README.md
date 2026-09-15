@@ -1,4 +1,4 @@
-# JASPER v0.4.0
+# JASPER v0.4.2
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -32,197 +32,98 @@ Default model: `qwen3:14b`.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+ollama pull qwen3:8b
 ollama pull qwen3:14b
 python -m app.main
 ```
 
 Create `.env` from `.env.example` if you want to override defaults.
 
-## What changed in v0.2
+## Desktop workspace — v0.4.2
 
-JASPER can now receive tool calls from Ollama, validate them through the permission layer, execute permitted read-only tools, return their results to the model, and continue the conversation until the model produces a final answer.
+JASPER now has a Windows desktop workspace around the existing JASPER Core. It is intentionally dark, clean, compact, and simple to navigate.
 
-The current agent loop is capped at 5 tool rounds as a safety limit.
-
-## Test it
-
-Try these in the JASPER prompt:
-
-```text
-What CPU am I using?
-```
-
-```text
-How much RAM do I have available?
-```
-
-```text
-List the files in C:\\Users\\YOUR_NAME\\Downloads
-```
-
-The first two should trigger `get_system_info`. The third should trigger `list_directory`.
-
-## Safety boundary
-
-v0.2 intentionally has **no** delete-file, arbitrary shell, registry, admin, write, or other destructive tool. The permission layer denies every tool except declared `READ` tools.
-
-Do not expose Ollama's local API to the public internet.
-
-## Performance routing
-
-JASPER v0.2.1 uses two local models when available:
-
-- `qwen3:8b` for ordinary conversation and short/simple requests.
-- `qwen3:14b` for tools, coding, analysis, planning, and more complex requests.
-
-Ollama keeps the selected model loaded for `5m` by default to avoid repeatedly paying model load time between nearby requests. Thinking is disabled by default for conversational responsiveness; complex tasks can later opt into thinking explicitly.
-
-Before running JASPER v0.2.1, pull the fast model:
+Install the GUI dependency:
 
 ```powershell
-ollama pull qwen3:8b
+pip install -r requirements-desktop.txt
 ```
 
-To inspect whether a model is on the GPU, run:
+Launch it with:
 
 ```powershell
-ollama ps
+python -m app.desktop
 ```
 
-The `PROCESSOR` column reports GPU/CPU placement.
+The first desktop milestone provides:
+
+- Chat workspace using the existing Orchestrator.
+- Optional one-turn voice input/output through the existing voice layer.
+- Live system footer for Ollama, voice, memory/tools, and detected GPU state.
+- Windows system-tray entry with Open and Exit.
+- Navigation placeholders for Tasks, Vision, Agents, Files, Web, and Settings so later capabilities have stable UI homes.
+- GUI code isolated from JASPER Core so future vision and multi-agent work can plug into the same application.
+
+The CLI remains available for development:
+
+```powershell
+python -m app.main
+```
 
 ## v0.2.2 — Hardware & Runtime Awareness
 
-v0.2.2 keeps the existing read-only tool-calling architecture and adds a richer `get_system_info` tool. It can now report:
-
-- Friendly Windows CPU model name.
-- Physical and logical CPU cores.
-- RAM total, available, and usage.
-- NVIDIA GPU name, VRAM total/used, GPU utilization, and driver version when `nvidia-smi` is available.
-- System drive capacity and free space.
-- Local Ollama availability and currently loaded models from `/api/ps`, including context length and VRAM allocation.
-
-The hardware probe is read-only. It does not execute user-provided shell commands. NVIDIA data comes from a fixed `nvidia-smi` query, and Ollama state is read from the local loopback API.
-
-### New hardware test
-
-Ask JASPER:
-
-```text
-What CPU, GPU, RAM, and storage am I using?
-```
-
-For Ollama state:
-
-```text
-What model is currently loaded in Ollama, and how much VRAM is it using?
-```
+`get_system_info` can report the Windows CPU model, CPU core counts, live RAM values, NVIDIA GPU/VRAM state, mounted storage volumes, and local Ollama `/api/ps` state.
 
 ## v0.2.3 — System Information Accuracy
 
 - Direct hardware/runtime fact questions force a fresh `get_system_info` observation before answering.
-- RAM is read from the live system rather than inferred by the model.
-- Storage is enumerated across mounted volumes rather than assuming a single 512 GB drive.
-- Direct system-fact responses are formatted from observed tool values, avoiding LLM substitution of guessed hardware specifications.
-- Existing read-only safety boundaries remain unchanged.
+- RAM and storage are read from the live machine rather than inferred by the model.
+- Direct system-fact responses are formatted from observed tool values.
 
 ## v0.2.4 — Expanded Ground-Truth System Observation
 
-- Expanded live-system fact detection beyond exact single-question patterns.
-- Combined hardware/runtime questions such as CPU + GPU + RAM + storage + Ollama now force a fresh `get_system_info` observation.
-- Added coverage for natural phrases such as `my PC specs` and `system information`.
-- Conceptual questions such as `How much RAM should a gaming PC have?` remain with the normal LLM path.
-- Direct system facts are still formatted only from observed tool values; no LLM guessing is used.
+- Combined hardware/runtime questions and common phrases such as `my PC specs` force a fresh system observation.
+- Conceptual questions remain on the normal LLM path.
 
 ## v0.3.0 — Explicit Long-Term Memory
 
-v0.3 adds a local, persistent long-term memory layer on top of the existing SQLite conversation history.
+v0.3 adds a local persistent memory layer.
 
-- User can explicitly save memories with natural language such as `Remember that my router is a Tenda TX3.`
-- JASPER can recall saved memories when they are relevant to a later question.
-- JASPER can list memories with `What do you remember about me?`.
-- JASPER can forget matching memories with `Forget my router Tenda TX3.`
-- Memory search uses deterministic local token overlap; no embeddings or external memory service are required.
-- Only explicit user memory commands write long-term memories in v0.3. Automatic LLM-generated memory extraction is intentionally disabled for accuracy and privacy.
-- Memory context is marked as user-provided remembered facts so the model is instructed not to invent or silently modify them.
-- The existing read-only system tools remain unchanged.
-
-### Memory examples
-
-```text
-Remember that my router is a Tenda TX3.
-```
-
-```text
-What do you remember about my router?
-```
-
-```text
-Forget my router Tenda TX3.
-```
-
-Long-term memories are stored locally in `data/jasper.db`.
+- Use `Remember that ...` to explicitly save a long-term memory.
+- Ask `What do you remember about ...?` to recall it.
+- Use `Forget ...` to remove a matching memory.
+- Memory search is deterministic and local; no embeddings or external memory service are required.
+- Only explicit user memory commands write long-term memories.
 
 ## v0.4.0 — Voice Interface Foundation
 
-v0.4 adds voice as an interface around the existing JASPER Core instead of putting speech logic inside the reasoning system.
-
-Architecture:
+Voice remains an interface around the existing JASPER Core:
 
 ```text
-Text  ────────────────────────┐
-                              ↓
-Voice → STT → JASPER Core → response → TTS → Voice
+Voice → STT → JASPER Core → response → TTS
 ```
 
-### Voice features
+The voice stack uses local Faster-Whisper STT and Windows Speech TTS by default, with optional Piper TTS. Voice dependencies remain separate in `requirements-voice.txt`.
 
-- `SpeechToTextProvider` and `TextToSpeechProvider` abstractions keep providers replaceable.
-- Local STT uses `faster-whisper` with lazy model loading.
-- STT defaults to GPU with automatic CPU fallback when CUDA is unavailable.
-- On Windows, JASPER automatically discovers NVIDIA CUDA runtime wheels inside the active Python environment and configures their DLL directories for the current process. It does not modify the user's permanent Windows PATH.
-- The voice dependency set includes CUDA 12 cuBLAS, CUDA runtime, NVRTC, and cuDNN 9 runtime packages for the current CTranslate2 GPU stack.
-- Audio recording is local and stops after configurable silence or a maximum duration.
-- Windows built-in Speech Synthesis is the default TTS provider, so a neural TTS model is not required for the first voice test.
-- Piper TTS is available as an optional local neural provider.
-- Voice dependencies live in `requirements-voice.txt`; the normal text-only installation remains lightweight.
-- Voice is disabled by default through `JASPER_VOICE_ENABLED=false`.
-- No wake-word listener is enabled in v0.4.
-- No autonomous voice-triggered actions are introduced in v0.4.
-
-### Enable voice
-
-Install the optional voice stack:
-
-```powershell
-pip install -r requirements-voice.txt
-```
-
-Then set in `.env`:
+Enable voice with:
 
 ```text
 JASPER_VOICE_ENABLED=true
 ```
 
-Start JASPER and use:
+Useful commands in the CLI are `:voice`, `:conversation`, and `:speak <text>`.
 
-```text
-:voice
-```
+## v0.4.1 — Voice Quality + Continuous Conversation
 
-JASPER records one utterance, transcribes it locally, sends the text through the normal JASPER Core, then speaks the response.
+- Configurable STT language, beam size, and initial prompt.
+- Bounded `:conversation` mode.
+- Explicit local English stop phrases, with `stop listening` as the canonical control phrase.
+- TTS formatting cleanup and configurable Windows voice/rate/volume.
+- Continuous conversation does not create an always-listening or wake-word service.
 
-You can also use:
+## v0.4.2 — Desktop + Tested STT Baseline
 
-```text
-:speak Hello from JASPER.
-```
-
-for a direct TTS test.
-
-### STT configuration
-
-`faster-whisper` can run on NVIDIA CUDA or CPU. The current Windows GPU setup uses CUDA 12 and cuDNN 9 runtime packages installed in the Python environment. JASPER configures their package-local DLL directories automatically before loading Faster-Whisper. Keep `JASPER_STT_DEVICE=auto` unless you have a reason to force a device.
+The current tested STT baseline is fixed Malay recognition (`ms`) rather than automatic language detection. The language setting is an STT control only; the LLM still receives text and can understand/respond in English, Bahasa Malaysia, or BM-English rojak.
 
 Defaults:
 
@@ -231,27 +132,12 @@ JASPER_STT_MODEL=small
 JASPER_STT_DEVICE=auto
 JASPER_STT_GPU_COMPUTE_TYPE=int8_float16
 JASPER_STT_CPU_COMPUTE_TYPE=int8
-JASPER_STT_LANGUAGE=auto
+JASPER_STT_LANGUAGE=ms
+JASPER_STT_BEAM_SIZE=5
 ```
 
-### TTS configuration
+The desktop interface is the new main application shell. Vision, richer task management, adaptive multi-agent cognition, web research, and automation can now be added behind the existing navigation instead of requiring a future GUI rewrite.
 
-Default provider:
+## Safety boundary
 
-```text
-JASPER_TTS_PROVIDER=windows
-```
-
-For local neural Piper TTS, install `piper-tts`, download a compatible voice model, then configure:
-
-```text
-JASPER_TTS_PROVIDER=piper
-JASPER_PIPER_MODEL=data/voices/en_US-lessac-medium.onnx
-JASPER_PIPER_CONFIG=data/voices/en_US-lessac-medium.onnx.json
-```
-
-Voice models are external assets and should be stored locally rather than committed to the JASPER repository.
-
-## v0.4 safety boundary
-
-Voice is an interface only. Spoken input is converted to text and passed through the same JASPER Core, memory, tool, and permission layers used by typed input. Voice does not bypass permissions and does not gain additional computer-control capabilities.
+JASPER still uses a read-only permission layer. The current tool set has no arbitrary shell, delete-file, registry, admin, or destructive tool.
