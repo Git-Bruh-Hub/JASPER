@@ -1,9 +1,80 @@
 from __future__ import annotations
 
 import logging
+import os
+import site
+import sys
 from pathlib import Path
 
 from app.voice.base import SpeechToTextProvider
+
+
+_CUDA_DLL_HANDLES: list[object] = []
+
+
+def _configure_cuda_runtime() -> list[Path]:
+    """Make CUDA runtime DLLs in the Python environment discoverable on Windows.
+
+    The current faster-whisper/CTranslate2 Windows GPU stack may rely on NVIDIA
+    runtime wheels rather than a system-wide CUDA Toolkit installation. Windows
+    native DLL loading does not automatically search those package directories,
+    so JASPER configures them for its own process before importing
+    faster-whisper. No global Windows PATH changes are made.
+    """
+    if os.name != "nt":
+        return []
+
+    roots: list[Path] = []
+    try:
+        roots.extend(Path(p) for p in site.getsitepackages())
+    except Exception:
+        pass
+
+    # sys.prefix covers the active virtual environment even when site metadata
+    # is unavailable or has been customized.
+    roots.append(Path(sys.prefix) / "Lib" / "site-packages")
+
+    bin_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        for relative in (
+            Path("nvidia") / "cublas" / "bin",
+            Path("nvidia") / "cudnn" / "bin",
+            Path("nvidia") / "cuda_runtime" / "bin",
+        ):
+            directory = (root / relative).resolve()
+            if directory in seen or not directory.is_dir():
+                continue
+            seen.add(directory)
+            bin_dirs.append(directory)
+
+    if not bin_dirs:
+        return []
+
+    # os.add_dll_directory handles modern Windows DLL search semantics. Keep
+    # the returned handles alive for the lifetime of the process.
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is not None:
+        for directory in bin_dirs:
+            try:
+                _CUDA_DLL_HANDLES.append(add_dll_directory(str(directory)))
+            except OSError:
+                pass
+
+    # CTranslate2/native CUDA loading can also consult PATH. Modify only the
+    # current JASPER process, never the user's persistent Windows environment.
+    current_path = os.environ.get("PATH", "")
+    path_entries = current_path.split(os.pathsep) if current_path else []
+    normalized = {os.path.normcase(os.path.normpath(entry)) for entry in path_entries}
+    new_entries = [
+        str(directory)
+        for directory in bin_dirs
+        if os.path.normcase(os.path.normpath(str(directory))) not in normalized
+    ]
+    if new_entries:
+        os.environ["PATH"] = os.pathsep.join(new_entries + path_entries)
+
+    return bin_dirs
 
 
 class FasterWhisperSTT(SpeechToTextProvider):
@@ -30,6 +101,10 @@ class FasterWhisperSTT(SpeechToTextProvider):
     def _load_model(self) -> None:
         if self._model is not None:
             return
+
+        cuda_dirs = _configure_cuda_runtime()
+        if cuda_dirs:
+            self.log.debug("Configured local CUDA DLL directories: %s", cuda_dirs)
 
         try:
             from faster_whisper import WhisperModel
