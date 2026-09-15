@@ -30,12 +30,14 @@ Communication and personality:
 
 Accuracy:
 - Do not invent facts, values, capabilities, or actions.
-- Distinguish observed facts from assumptions or general knowledge.
+- Distinguish observed facts from reference specifications, assumptions, and general knowledge.
 - When a local tool can directly verify a fact, use the tool instead of guessing.
 - If information is uncertain or unavailable, say so clearly rather than filling the gap.
-- For hardware explanations, prioritize live observations supplied by the system-inspection context.
+- For hardware explanations, the live system observations and exact-model reference specifications supplied in the hardware context are authoritative for this machine.
+- Do not override a supplied hardware value with a remembered value.
 - Do not use Intel-specific terminology for AMD CPUs. AMD Ryzen processors use SMT (Simultaneous Multithreading), not Intel's Hyper-Threading branding.
 - Distinguish base clock from maximum boost clock. Never call the base clock the boost clock.
+- Do not present a reference specification as a live measurement. Clearly distinguish static specifications from current usage/state.
 
 Tool use:
 - You have access to read-only local tools.
@@ -149,8 +151,29 @@ def _system_observation_tool_result(registry: ToolRegistry, permissions: Permiss
     return tool.handler()
 
 
+def _cpu_reference_facts(info: dict) -> dict:
+    """Return trusted static reference specifications for a recognized CPU model."""
+    name = str(info.get("cpu") or "").lower()
+    if "ryzen 5 5600x" not in name:
+        return {}
+    return {
+        "model": "AMD Ryzen 5 5600X",
+        "architecture": "Zen 3",
+        "cores": 6,
+        "threads": 12,
+        "threading_technology": "AMD SMT (Simultaneous Multithreading)",
+        "socket": "AM4",
+        "tdp_w": 65,
+        "base_clock_ghz": 3.7,
+        "max_boost_clock_ghz": 4.6,
+        "l2_cache_mb": 3,
+        "l3_cache_mb": 32,
+        "total_cache_mb": 35,
+    }
+
+
 def _grounding_context(question: str, info: dict) -> str:
-    """Build a compact, observation-only context block relevant to the question."""
+    """Build a compact, authoritative hardware context for the model."""
     q = question.lower()
     observed: dict[str, Any] = {}
 
@@ -161,10 +184,15 @@ def _grounding_context(question: str, info: dict) -> str:
     asks_ollama = "ollama" in q
 
     if asks_cpu:
-        observed["cpu"] = info.get("cpu")
-        observed["cpu_details"] = info.get("cpu_details", {})
-        observed["cpu_physical_cores"] = info.get("cpu_physical_cores")
-        observed["cpu_logical_cores"] = info.get("cpu_logical_cores")
+        observed["live_observations"] = {
+            "cpu_name": info.get("cpu"),
+            "cpu_details": info.get("cpu_details", {}),
+            "physical_cores": info.get("cpu_physical_cores"),
+            "logical_processors": info.get("cpu_logical_cores"),
+        }
+        reference = _cpu_reference_facts(info)
+        if reference:
+            observed["reference_specifications_for_this_exact_model"] = reference
     if asks_gpu:
         observed["gpu"] = info.get("gpu") or []
     if asks_ram:
@@ -177,9 +205,11 @@ def _grounding_context(question: str, info: dict) -> str:
         observed["ollama"] = info.get("ollama") or {}
 
     return (
-        "Live system observations from the read-only inspection tool follow. "
-        "Treat these as authoritative for this machine. Do not replace them with remembered values. "
-        "You may explain general concepts using your model knowledge, but do not invent or silently alter observed values.\n\n"
+        "AUTHORITATIVE HARDWARE CONTEXT. Use the supplied values exactly. "
+        "Live observations describe this computer right now. Reference specifications describe the exact identified CPU model. "
+        "Do not substitute remembered values. Do not call a base clock a boost clock. "
+        "For AMD Ryzen, call the 12-thread capability SMT, not Hyper-Threading. "
+        "Current RAM usage is a live state value, not a CPU specification.\n\n"
         + json.dumps(observed, ensure_ascii=False, indent=2, default=str)
     )
 
@@ -254,6 +284,40 @@ def _format_system_fact_answer(question: str, info: dict) -> str:
         return "I inspected the system, but I couldn't map that question to a supported system fact."
 
     return "\n".join(sections)
+
+
+def _response_budget(text: str) -> int:
+    """Choose a generation budget from the user's requested depth."""
+    normalized = " ".join(text.lower().split())
+    detailed = any(
+        phrase in normalized
+        for phrase in (
+            "in detail",
+            "detailed",
+            "thorough",
+            "deep dive",
+            "comprehensive",
+            "step by step",
+            "explain fully",
+        )
+    )
+    complex_request = any(
+        phrase in normalized
+        for phrase in (
+            "analyze",
+            "compare",
+            "debug",
+            "design",
+            "plan",
+            "why is",
+            "how can i",
+        )
+    )
+    if detailed or complex_request:
+        return 1024
+    if len(normalized.split()) <= 12:
+        return 384
+    return 640
 
 
 class Orchestrator:
@@ -334,14 +398,26 @@ class Orchestrator:
 
         provider, model = self.models.provider_for(user_text)
         tools = self._tool_schemas()
+        max_output_tokens = _response_budget(user_text)
+        self.log.info("response budget=%s tokens", max_output_tokens)
 
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
             if on_chunk is None:
-                response = await provider.chat(messages, model=model, tools=tools)
+                response = await provider.chat(
+                    messages,
+                    model=model,
+                    tools=tools,
+                    max_output_tokens=max_output_tokens,
+                )
                 message = response.get("message", {})
             else:
                 message, response = await self._stream_model_round(
-                    provider, messages, model=model, tools=tools, on_chunk=on_chunk
+                    provider,
+                    messages,
+                    model=model,
+                    tools=tools,
+                    max_output_tokens=max_output_tokens,
+                    on_chunk=on_chunk,
                 )
 
             tool_calls = message.get("tool_calls") or []
@@ -372,6 +448,7 @@ class Orchestrator:
         *,
         model: str,
         tools: list[dict[str, Any]],
+        max_output_tokens: int,
         on_chunk: Callable[[str], None],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Stream one model round and reconstruct the final assistant message."""
@@ -379,7 +456,12 @@ class Orchestrator:
         final_chunk: dict[str, Any] = {}
         final_tool_calls: list[dict[str, Any]] = []
 
-        async for chunk in provider.stream_chat(messages, model=model, tools=tools):
+        async for chunk in provider.stream_chat(
+            messages,
+            model=model,
+            tools=tools,
+            max_output_tokens=max_output_tokens,
+        ):
             final_chunk = chunk
             message = chunk.get("message") or {}
             piece = message.get("content") or ""
