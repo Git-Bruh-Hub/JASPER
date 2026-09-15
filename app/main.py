@@ -137,12 +137,13 @@ async def main():
     jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
     voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
-    print("JASPER v0.4.1")
+    print("JASPER v0.4.2")
     print("Tool calling + explicit long-term memory enabled.")
     if voice:
         print("Voice enabled. Use ':voice' for one turn, ':conversation' for continuous conversation, or ':speak <text>'.")
     else:
         print("Voice disabled. Set JASPER_VOICE_ENABLED=true to enable it.")
+    print("Desktop workspace: python -m app.desktop")
     print("Type 'exit' to quit.\n")
 
     while True:

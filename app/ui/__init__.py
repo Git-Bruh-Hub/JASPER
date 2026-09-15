@@ -1,0 +1,1 @@
+"""JASPER desktop workspace UI."""
