@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.config import JASPER_VOICE_ENABLED
+from app.ui.markdown_renderer import markdown_to_html
 from app.ui.styles import APP_STYLE
 from app.ui.worker import JasperWorker
 
@@ -416,13 +417,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _markdown_to_html(text: str) -> str:
-        """Render Markdown as rich text without exposing Markdown markers."""
-        normalized = re.sub(r"\\([*_#`~\[\]-])", r"\1", text)
-        document = QTextDocument()
-        document.setMarkdown(normalized)
-        html = document.toHtml()
-        match = re.search(r"<body[^>]*>(.*)</body>", html, flags=re.DOTALL | re.IGNORECASE)
-        return match.group(1) if match else escape(normalized).replace("\n", "<br>")
+        return markdown_to_html(text)
 
     def _append_message(self, speaker: str, body: str) -> None:
         self._messages.append((speaker, body))
