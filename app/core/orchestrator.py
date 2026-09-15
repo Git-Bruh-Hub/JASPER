@@ -8,6 +8,7 @@ from app.memory.memory_manager import MemoryManager
 from app.models.model_router import ModelRouter
 from app.core.permissions import PermissionManager
 from app.tools.registry import ToolRegistry
+from app.knowledge.hardware import get_cpu_profile, render_cpu_explanation
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -123,27 +124,6 @@ def _system_observation_tool_result(registry: ToolRegistry, permissions: Permiss
     return tool.handler()
 
 
-def _cpu_reference_facts(info: dict) -> dict:
-    """Return trusted static reference specifications for a recognized CPU model."""
-    name = str(info.get("cpu") or "").lower()
-    if "ryzen 5 5600x" not in name:
-        return {}
-    return {
-        "model": "AMD Ryzen 5 5600X",
-        "architecture": "Zen 3",
-        "cores": 6,
-        "threads": 12,
-        "threading_technology": "AMD SMT (Simultaneous Multithreading)",
-        "socket": "AM4",
-        "tdp_w": 65,
-        "base_clock_ghz": 3.7,
-        "max_boost_clock_ghz": 4.6,
-        "l2_cache_mb": 3,
-        "l3_cache_mb": 32,
-        "total_cache_mb": 35,
-    }
-
-
 def _grounding_context(question: str, info: dict) -> str:
     """Build a compact, authoritative hardware context for the model."""
     q = question.lower()
@@ -160,7 +140,7 @@ def _grounding_context(question: str, info: dict) -> str:
             "physical_cores": info.get("cpu_physical_cores"),
             "logical_processors": info.get("cpu_logical_cores"),
         }
-        reference = _cpu_reference_facts(info)
+        reference = get_cpu_profile(info.get("cpu"))
         if reference:
             observed["reference_specifications_for_this_exact_model"] = reference
     if asks_gpu:
@@ -306,6 +286,18 @@ class Orchestrator:
                 on_chunk(answer)
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
+
+        normalized = " ".join(user_text.lower().split())
+        if _requires_system_grounding(user_text) and ("cpu" in normalized or "processor" in normalized):
+            info = _system_observation_tool_result(self.registry, self.permissions)
+            answer = render_cpu_explanation(user_text, info)
+            if answer is not None:
+                self.memory.add("assistant", answer)
+                if on_chunk:
+                    on_chunk(answer)
+                self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
+                return answer
+
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
