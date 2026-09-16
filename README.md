@@ -1,4 +1,4 @@
-# JASPER v0.4.2
+# JASPER v0.5.0
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -24,7 +24,7 @@ Local-first personal AI assistant foundation for Windows 11.
 - Ollama installed and running
 - A local Ollama model with tool-calling support
 
-Default model: `qwen3:14b`.
+Default text model: `qwen3:14b`.
 
 ## Setup
 
@@ -69,6 +69,62 @@ The CLI remains available for development:
 ```powershell
 python -m app.main
 ```
+
+## v0.5.0 — Vision Foundation
+
+v0.5 adds a provider-independent local vision layer without giving the vision model permission to control the computer.
+
+Architecture:
+
+```text
+Image file
+   ↓
+VisionManager
+   ↓
+VisionRouter
+   ↓
+VisionProvider
+   ↓
+VisionResult
+   ↓
+Future JASPER Core integration
+```
+
+The first implementation uses Ollama's multimodal `/api/chat` interface and sends image data through the message `images` field. It does not add external cloud vision services, continuous screen monitoring, or computer-control actions.
+
+Current local baseline:
+
+```text
+JASPER_VISION_MODEL=qwen3-vl:8b
+JASPER_VISION_MAX_OUTPUT_TOKENS=512
+JASPER_VISION_MAX_IMAGE_MB=10
+```
+
+Install the vision model separately:
+
+```powershell
+ollama pull qwen3-vl:8b
+```
+
+The CLI can test the foundation before the desktop Vision workspace is wired in:
+
+```text
+:vision <image-path> <question>
+```
+
+Example:
+
+```text
+:vision C:\Users\Name\Pictures\test.png What is in this image?
+```
+
+Safety boundary for v0.5.0:
+
+- Image files are read-only inputs.
+- Vision analysis does not click, type, delete, execute commands, or modify the machine.
+- Continuous screen watching is not enabled.
+- Visual observations are kept separate from verified system facts.
+- Provider/model choice is configurable rather than hard-coded into JASPER Core.
 
 ## v0.2.2 — Hardware & Runtime Awareness
 
@@ -136,7 +192,7 @@ JASPER_STT_LANGUAGE=ms
 JASPER_STT_BEAM_SIZE=5
 ```
 
-The desktop interface is the new main application shell. Vision, richer task management, adaptive multi-agent cognition, web research, and automation can now be added behind the existing navigation instead of requiring a future GUI rewrite.
+The desktop interface is the main application shell. Vision, richer task management, adaptive multi-agent cognition, web research, and automation can be added behind the existing navigation instead of requiring a future GUI rewrite.
 
 ## Safety boundary
 
