@@ -9,6 +9,7 @@ import httpx
 
 from app.core.config import (
     JASPER_VISION_KEEP_ALIVE,
+    JASPER_VISION_MAX_IMAGE_MB,
     JASPER_VISION_MAX_OUTPUT_TOKENS,
     JASPER_VISION_MODEL,
     JASPER_VISION_THINK,
@@ -34,7 +35,8 @@ class OllamaVisionProvider(VisionProvider):
         stream: bool,
         max_output_tokens: int | None,
     ) -> dict:
-        image = load_image(image_path)
+        max_image_bytes = JASPER_VISION_MAX_IMAGE_MB * 1024 * 1024
+        image = load_image(image_path, max_bytes=max_image_bytes)
         return {
             "model": model or JASPER_VISION_MODEL,
             "messages": [
