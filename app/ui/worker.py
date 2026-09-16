@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from app.core.config import JASPER_VOICE_ENABLED
 from app.core.orchestrator import Orchestrator
 from app.core.permissions import PermissionManager
-from app.main import build_registry, build_voice_manager
+from app.main import build_registry, build_vision_manager, build_voice_manager
 from app.memory.sqlite_memory import SQLiteMemory
 from app.tools.system import get_system_info
 
@@ -18,6 +18,7 @@ class JasperWorker(QObject):
 
     response_ready = Signal(str, str)  # kind, content
     response_stream = Signal(str)  # incremental assistant text
+    vision_ready = Signal(str)
     status_changed = Signal(str)
     system_status_ready = Signal(dict)
     error = Signal(str)
@@ -28,6 +29,7 @@ class JasperWorker(QObject):
         self.log = logging.getLogger("jasper.ui.worker")
         self.jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
         self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
+        self.vision = build_vision_manager()
 
     @Slot()
     def refresh_system_status(self) -> None:
@@ -49,6 +51,19 @@ class JasperWorker(QObject):
             self.response_ready.emit("text", answer)
         except Exception as exc:
             self.log.exception("Desktop text request failed")
+            self.error.emit(str(exc))
+        finally:
+            self.status_changed.emit("STANDBY")
+            self.finished.emit()
+
+    @Slot(str, str)
+    def analyze_vision(self, image_path: str, prompt: str) -> None:
+        self.status_changed.emit("ACTIVE")
+        try:
+            result = asyncio.run(self.vision.analyze(image_path, prompt))
+            self.vision_ready.emit(result.answer)
+        except Exception as exc:
+            self.log.exception("Desktop vision request failed")
             self.error.emit(str(exc))
         finally:
             self.status_changed.emit("STANDBY")
