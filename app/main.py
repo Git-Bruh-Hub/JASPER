@@ -36,6 +36,9 @@ from app.tools.system import get_system_info
 from app.voice.manager import VoiceManager
 from app.voice.stt import FasterWhisperSTT
 from app.voice.tts import PiperTTS, WindowsSpeechTTS
+from app.vision.manager import VisionManager
+from app.vision.ollama_provider import OllamaVisionProvider
+from app.vision.router import VisionRouter
 
 
 def build_registry() -> ToolRegistry:
@@ -126,6 +129,10 @@ def build_voice_manager() -> VoiceManager:
     )
 
 
+def build_vision_manager() -> VisionManager:
+    return VisionManager(VisionRouter(OllamaVisionProvider()))
+
+
 def print_voice_turn(turn_number: int, user_text: str, answer: str) -> None:
     print(f"You (voice {turn_number}): {user_text}")
     print(f"JASPER: {answer}\n")
@@ -136,13 +143,15 @@ async def main():
     log = logging.getLogger("jasper")
     jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
     voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
+    vision = build_vision_manager()
 
-    print("JASPER v0.4.2")
-    print("Tool calling + explicit long-term memory enabled.")
+    print("JASPER v0.5.0")
+    print("Tool calling + explicit long-term memory + vision foundation enabled.")
     if voice:
         print("Voice enabled. Use ':voice' for one turn, ':conversation' for continuous conversation, or ':speak <text>'.")
     else:
         print("Voice disabled. Set JASPER_VOICE_ENABLED=true to enable it.")
+    print("Vision: use ':vision <image-path> <question>'.")
     print("Desktop workspace: python -m app.desktop")
     print("Type 'exit' to quit.\n")
 
@@ -207,6 +216,22 @@ async def main():
             except Exception as exc:
                 log.exception("TTS request failed")
                 print(f"JASPER: TTS failed: {exc}\n")
+            continue
+
+        if user_text.lower().startswith(":vision"):
+            remainder = user_text[len(":vision"):].strip()
+            if not remainder:
+                print("JASPER: Usage: :vision <image-path> <question>\n")
+                continue
+            parts = remainder.split(maxsplit=1)
+            image_path = parts[0]
+            prompt = parts[1] if len(parts) == 2 else "Describe the image and mention only visually supported details."
+            try:
+                result = await vision.analyze(image_path, prompt)
+                print(f"JASPER Vision ({result.model}): {result.answer}\n")
+            except Exception as exc:
+                log.exception("Vision request failed")
+                print(f"JASPER: Vision request failed: {exc}\n")
             continue
 
         try:
