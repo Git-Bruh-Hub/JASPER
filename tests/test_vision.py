@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,8 +16,7 @@ class FakeProvider:
         self.calls += 1
         if self.error is not None:
             raise self.error
-        result = self.results.pop(0)
-        return result
+        return self.results.pop(0)
 
 
 def result(answer: str) -> VisionResult:
@@ -29,16 +27,6 @@ def result(answer: str) -> VisionResult:
         prompt="test",
         answer=answer,
     )
-
-
-def test_manager_passes_configured_retry_budget(monkeypatch, tmp_path):
-    provider = FakeProvider(results=[result("first")])
-    manager = VisionManager(SimpleNamespace(provider=provider, model="test"), empty_response_retries=1)
-    image = tmp_path / "test.png"
-    image.write_bytes(b"x")
-
-    output = pytest.run(asyncio=True)
-    assert output is not None
 
 
 @pytest.mark.asyncio
