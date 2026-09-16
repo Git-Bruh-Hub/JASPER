@@ -4,7 +4,7 @@ from html import escape
 
 from PySide6.QtCore import QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
 
 from app.core.config import JASPER_VOICE_ENABLED
 from app.ui.markdown_renderer import markdown_to_html
@@ -356,19 +356,20 @@ class MainWindow(QMainWindow):
         self.ollama_status.setText("Ollama ●" if ollama.get("available") else "Ollama ○")
         self.voice_status.setText("Voice ●" if JASPER_VOICE_ENABLED else "Voice ○")
         gpus = info.get("gpu") or []
-        self.gpu_status.setText((gpus[0].get("name") or "GPU") if gpus else "GPU ○")
+        if gpus:
+            self.gpu_status.setText(f"{gpus[0].get('name', 'GPU')} ●")
+        else:
+            self.gpu_status.setText("GPU ○")
 
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
+        self.input.setEnabled(not busy)
         self.send_button.setEnabled(not busy)
         self.mic_button.setEnabled(not busy and JASPER_VOICE_ENABLED)
-        self.input.setEnabled(not busy)
-        if not busy and not self._streaming_active:
-            self._stop_thinking()
 
-    def _show_thinking(self, prefix: str) -> None:
+    def _show_thinking(self, label: str) -> None:
         self._thinking_step = 0
-        self.thinking_indicator.setText(prefix)
+        self.thinking_indicator.setText(f"{label}…")
         self.thinking_indicator.show()
         self._thinking_timer.start()
 
@@ -377,41 +378,29 @@ class MainWindow(QMainWindow):
         self.thinking_indicator.hide()
 
     def _animate_thinking(self) -> None:
-        if not self.busy or self._streaming_content:
-            self._thinking_timer.stop()
-            return
-        base = self.thinking_indicator.text().rstrip(".")
         self._thinking_step = (self._thinking_step + 1) % 4
-        self.thinking_indicator.setText(f"{base}{'.' * self._thinking_step}")
+        base = self.thinking_indicator.text().rstrip(".…")
+        self.thinking_indicator.setText(base + "." * (self._thinking_step + 1))
 
-    def _append_message(self, speaker: str, body: str) -> None:
-        self._messages.append((speaker, body))
+    def _append_message(self, sender: str, content: str) -> None:
+        self._messages.append((sender, content))
         self._render_conversation()
 
     def _render_conversation(self) -> None:
         blocks: list[str] = []
-        for speaker, body in self._messages:
-            is_user = speaker.startswith("You")
-            align = "right" if is_user else "left"
-            label_color = "#b7b7b7" if is_user else "#8ee6a1"
-            speaker_html = escape(speaker)
-            blocks.append(f'<div style="margin:10px 2px 16px 2px; text-align:{align};"><div style="color:{label_color}; font-size:9pt; font-weight:600; margin-bottom:4px;">{speaker_html}</div><div style="color:#eeeeee; font-size:10pt;">{markdown_to_html(body)}</div></div>')
-        self.conversation.setHtml("".join(blocks))
-        cursor = self.conversation.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.conversation.setTextCursor(cursor)
-        self.conversation.ensureCursorVisible()
+        for sender, content in self._messages:
+            html = markdown_to_html(content)
+            if sender.startswith("You"):
+                blocks.append(f'<div align="right"><b>{escape(sender)}</b><br>{html}</div>')
+            else:
+                blocks.append(f'<div align="left"><b>{escape(sender)}</b><br>{html}</div>')
+        self.conversation.setHtml("<br><br>".join(blocks))
+        scrollbar = self.conversation.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def closeEvent(self, event) -> None:
-        if self.busy:
-            answer = QMessageBox.question(self, "JASPER is working", "JASPER is still processing a request. Exit anyway?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
         if self._tray is not None:
             self._tray.hide()
-        self._stop_thinking()
         self.thread.quit()
         self.thread.wait(3000)
-        QApplication.quit()
         event.accept()
