@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shlex
 
 from app.core.config import (
     JASPER_PIPER_CONFIG,
@@ -138,6 +139,34 @@ def print_voice_turn(turn_number: int, user_text: str, answer: str) -> None:
     print(f"JASPER: {answer}\n")
 
 
+def parse_vision_command(text: str) -> tuple[str, str]:
+    """Parse :vision while preserving quoted Windows paths containing spaces."""
+    remainder = text[len(":vision"):].strip()
+    if not remainder:
+        raise ValueError("Usage: :vision <image-path> <question>")
+
+    try:
+        parts = shlex.split(remainder, posix=False)
+    except ValueError as exc:
+        raise ValueError(f"Invalid :vision command quoting: {exc}") from exc
+
+    if not parts:
+        raise ValueError("Usage: :vision <image-path> <question>")
+
+    image_path = parts[0]
+    if len(parts) == 1:
+        prompt = "Describe the image and mention only visually supported details."
+    else:
+        prompt = " ".join(parts[1:]).strip()
+
+    # shlex with posix=False preserves Windows quoting in a form that may
+    # include the surrounding quotes. Remove only one matching pair.
+    if len(image_path) >= 2 and image_path[0] == image_path[-1] and image_path[0] in {'"', "'"}:
+        image_path = image_path[1:-1]
+
+    return image_path, prompt
+
+
 async def main():
     setup_logging()
     log = logging.getLogger("jasper")
@@ -219,14 +248,8 @@ async def main():
             continue
 
         if user_text.lower().startswith(":vision"):
-            remainder = user_text[len(":vision"):].strip()
-            if not remainder:
-                print("JASPER: Usage: :vision <image-path> <question>\n")
-                continue
-            parts = remainder.split(maxsplit=1)
-            image_path = parts[0]
-            prompt = parts[1] if len(parts) == 2 else "Describe the image and mention only visually supported details."
             try:
+                image_path, prompt = parse_vision_command(user_text)
                 result = await vision.analyze(image_path, prompt)
                 print(f"JASPER Vision ({result.model}): {result.answer}\n")
             except Exception as exc:
