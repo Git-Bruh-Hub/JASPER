@@ -27,9 +27,9 @@ class JasperWorker(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.log = logging.getLogger("jasper.ui.worker")
-        self.jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
-        self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
         self.vision = build_vision_manager()
+        self.jasper = Orchestrator(build_registry(self.vision), PermissionManager(), SQLiteMemory())
+        self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
     @Slot()
     def refresh_system_status(self) -> None:

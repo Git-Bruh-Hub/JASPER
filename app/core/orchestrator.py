@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -47,6 +48,13 @@ Tool use:
 - After receiving tool results, answer using those results.
 - Never claim a tool ran unless its result confirms it.
 
+Vision:
+- You have a read-only image inspection tool.
+- Use it ONLY when the user explicitly mentions an image file path or asks you to look at, describe, or analyze a specific image file on their computer.
+- Do not guess image paths. If the user mentions an image but does not provide a path, ask them for the exact file path.
+- Do not use vision for text-only questions.
+- After receiving visual observations, answer using those observations. Do not add details that are not in the visual observation.
+
 Safety:
 - Never invent filesystem contents or system state.
 - Do not attempt actions outside the tools provided to you.
@@ -86,6 +94,21 @@ SYSTEM_LIVE_CONTEXT = (
 SYSTEM_GROUNDING_TERMS = (
     "explain", "describe", "details", "detailed", "specification", "specifications",
     "about my", "tell me about my", "what can my", "how does my",
+)
+
+_IMAGE_PATH_RE = re.compile(
+    r"""
+    (?:                           # path prefix — at least one of:
+        (?<![A-Za-z])             #   NOT preceded by a letter (isolates drive)
+        [A-Za-z]:[\\\/]           #   Windows drive letter  (C:\, D:/)
+      | \\\\                      #   UNC path              (\\server\...)
+      | (?:^|(?<=\s)|(?<=["']))   #   must follow whitespace, quote, or SOL
+        [~]?\/                    #   Unix-style absolute or home-relative
+    )
+    \S*                           # rest of path (no spaces — may be quoted)
+    \.(?:png|jpe?g|webp)          # image extension
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
@@ -243,8 +266,21 @@ class Orchestrator:
         self.models = ModelRouter()
         self.log = logging.getLogger("jasper.orchestrator")
 
-    def _tool_schemas(self) -> list[dict[str, Any]]:
-        return [tool.schema() for tool in self.registry.list() if self.permissions.allowed(tool)]
+    def _tool_schemas(self, user_text: str = "") -> list[dict[str, Any]]:
+        """Build tool schemas for the current turn.
+
+        ``inspect_image`` is only offered to the model when the user's message
+        contains an explicit local image file path (e.g. ``C:\\photo.png``).
+        Generic mentions of "image", "photo", or "screenshot" without a path
+        do **not** surface the tool, preventing the model from inventing paths.
+        """
+        image_relevant = bool(_IMAGE_PATH_RE.search(user_text))
+        return [
+            tool.schema()
+            for tool in self.registry.list()
+            if self.permissions.allowed(tool)
+            and (tool.name != "inspect_image" or image_relevant)
+        ]
 
     async def _execute_tool_call(self, call: dict[str, Any]) -> str:
         function = call.get("function") or {}
@@ -262,6 +298,8 @@ class Orchestrator:
         self.log.info("tool requested name=%s arguments=%s", name, arguments)
         try:
             result = tool.handler(**arguments)
+            if asyncio.iscoroutine(result):
+                result = await result
             if hasattr(result, "model_dump"):
                 result = result.model_dump()
             return json.dumps(result, ensure_ascii=False, default=str)
@@ -320,7 +358,7 @@ class Orchestrator:
             messages.append({"role": "system", "content": _grounding_context(user_text, info)})
             self.log.info("added live system grounding for hardware explanation")
         provider, model = self.models.provider_for(user_text)
-        tools = self._tool_schemas()
+        tools = self._tool_schemas(user_text)
         max_output_tokens = _response_budget(user_text)
         self.log.info("response budget=%s tokens", max_output_tokens)
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):

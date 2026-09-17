@@ -34,6 +34,7 @@ from app.memory.sqlite_memory import SQLiteMemory
 from app.tools.filesystem import list_directory, read_text_file
 from app.tools.registry import Risk, Tool, ToolRegistry
 from app.tools.system import get_system_info
+from app.tools.vision import validate_image_path
 from app.voice.manager import VoiceManager
 from app.voice.stt import FasterWhisperSTT
 from app.voice.tts import PiperTTS, WindowsSpeechTTS
@@ -42,7 +43,7 @@ from app.vision.ollama_provider import OllamaVisionProvider
 from app.vision.router import VisionRouter
 
 
-def build_registry() -> ToolRegistry:
+def build_registry(vision: VisionManager | None = None) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(Tool(
         "get_system_info",
@@ -86,6 +87,44 @@ def build_registry() -> ToolRegistry:
             "required": ["path"],
         },
     ))
+    if vision is not None:
+        async def inspect_image(image_path: str, question: str = "") -> dict:
+            """Analyze a local image and return a structured visual observation."""
+            validated = validate_image_path(image_path)
+            prompt = question.strip() or None
+            result = await vision.analyze(validated, prompt) if prompt else await vision.analyze(validated)
+            return {
+                "image_path": str(validated),
+                "observation": result.answer,
+                "model": result.model,
+                "provider": result.provider,
+            }
+
+        registry.register(Tool(
+            "inspect_image",
+            (
+                "Analyze a local image file and describe its visual contents. "
+                "Use this ONLY when the user explicitly provides or confirms a specific "
+                "image file path on their computer. Do not guess or assume image paths. "
+                "This tool is read-only and does not modify the image or filesystem."
+            ),
+            Risk.READ,
+            inspect_image,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Absolute path to a local image file. Supported formats: PNG, JPG, JPEG, WebP.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "What to analyze or look for in the image. If omitted, the image will be described generally.",
+                    },
+                },
+                "required": ["image_path"],
+            },
+        ))
     return registry
 
 
@@ -170,9 +209,9 @@ def parse_vision_command(text: str) -> tuple[str, str]:
 async def main():
     setup_logging()
     log = logging.getLogger("jasper")
-    jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
-    voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
     vision = build_vision_manager()
+    jasper = Orchestrator(build_registry(vision), PermissionManager(), SQLiteMemory())
+    voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
     print("JASPER v0.5.0")
     print("Tool calling + explicit long-term memory + vision foundation enabled.")
