@@ -147,9 +147,9 @@ async def test_respond_observation_not_injected_when_no_vision_manager(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_respond_handles_vision_failure_gracefully(tmp_path: Path) -> None:
-    """If VisionManager raises, the turn still completes with a failure note
-    injected as a system message rather than an uncaught exception."""
+async def test_respond_raises_when_vision_fails(tmp_path: Path) -> None:
+    """If VisionManager raises, respond() must propagate the exception.
+    The normal text-LLM must NOT be called."""
     image = tmp_path / "photo.png"
     image.write_bytes(PNG_BYTES)
 
@@ -157,46 +157,41 @@ async def test_respond_handles_vision_failure_gracefully(tmp_path: Path) -> None
     vm.analyze = AsyncMock(side_effect=RuntimeError("Ollama unavailable"))
     orchestrator = _make_orchestrator(vision=vm, tmp_path=tmp_path)
 
-    captured_messages: list[list[dict]] = []
+    llm_called = False
 
     async def fake_chat(messages, *, model, tools, max_output_tokens):
-        captured_messages.append(messages)
-        return {"message": {"role": "assistant", "content": "I cannot help with the image right now."}}
+        nonlocal llm_called
+        llm_called = True
+        return {"message": {"role": "assistant", "content": "should not reach here"}}
 
-    # Should NOT raise — failure is graceful
     with patch.object(orchestrator.models.local, "chat", side_effect=fake_chat):
-        answer = await orchestrator.respond("What is this?", image_path=str(image))
+        with pytest.raises(RuntimeError, match="Ollama unavailable"):
+            await orchestrator.respond("What is this?", image_path=str(image))
 
-    assert answer  # LLM still responded
-    all_content = " ".join(
-        m["content"] for msgs in captured_messages for m in msgs if m.get("role") == "system"
-    )
-    assert "Vision analysis could not be completed" in all_content
+    assert not llm_called, "Text-model must NOT be called when vision analysis fails"
 
 
 @pytest.mark.asyncio
-async def test_respond_validates_image_path_before_analysis(tmp_path: Path) -> None:
-    """An invalid path (missing file) is caught; a failure note is injected
-    and the LLM still gets to respond."""
+async def test_respond_raises_for_invalid_image_path(tmp_path: Path) -> None:
+    """An invalid path (missing file) must propagate as FileNotFoundError.
+    The normal text-LLM must NOT be called."""
     missing = tmp_path / "ghost.png"  # does not exist
 
     vm = _stub_vision_manager()
     orchestrator = _make_orchestrator(vision=vm, tmp_path=tmp_path)
 
-    captured_messages: list[list[dict]] = []
+    llm_called = False
 
     async def fake_chat(messages, *, model, tools, max_output_tokens):
-        captured_messages.append(messages)
-        return {"message": {"role": "assistant", "content": "That image does not exist."}}
+        nonlocal llm_called
+        llm_called = True
+        return {"message": {"role": "assistant", "content": "should not reach here"}}
 
     with patch.object(orchestrator.models.local, "chat", side_effect=fake_chat):
-        answer = await orchestrator.respond("What is this?", image_path=str(missing))
+        with pytest.raises(FileNotFoundError):
+            await orchestrator.respond("What is this?", image_path=str(missing))
 
-    assert answer
-    all_content = " ".join(
-        m["content"] for msgs in captured_messages for m in msgs if m.get("role") == "system"
-    )
-    assert "Vision analysis could not be completed" in all_content
+    assert not llm_called, "Text-model must NOT be called when image path is invalid"
 
 
 @pytest.mark.asyncio

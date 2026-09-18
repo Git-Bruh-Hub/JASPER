@@ -363,26 +363,22 @@ class Orchestrator:
                 self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
                 return answer
 
-        # --- Vision-to-text bridge (v0.5.2) ---------------------------------
-        # When the user attaches an image, analyze it with VisionManager first
-        # and inject the textual observation as a system message.  This is the
-        # same grounding pattern used by _grounding_context() for hardware data.
-        # Failure is graceful: a short error note is injected so the LLM can
-        # still respond to the user's text portion of the request.
+        # --- Vision-to-text bridge (v0.5.2 / hardened) ----------------------
+        # When the user attaches an image, validate and analyze it FIRST.
+        # If validation or analysis fails the exception propagates immediately:
+        # the normal text-LLM is never called and the Worker's error-signal path
+        # displays the failure to the user.  This is intentional — JASPER must
+        # not answer an image question when it cannot see the image.
         vision_observation: str | None = None
         if image_path and self.vision:
-            try:
-                validated = validate_image_path(image_path)
-                result = await self.vision.analyze(validated)
-                vision_observation = result.answer
-                self.log.info(
-                    "vision bridge completed path=%s chars=%s",
-                    validated.name,
-                    len(vision_observation),
-                )
-            except Exception as exc:
-                self.log.warning("vision bridge failed: %s", exc)
-                vision_observation = f"[Vision analysis could not be completed: {exc}]"
+            validated = validate_image_path(image_path)
+            result = await self.vision.analyze(validated)
+            vision_observation = result.answer
+            self.log.info(
+                "vision bridge completed path=%s chars=%s",
+                validated.name,
+                len(vision_observation),
+            )
         # ----------------------------------------------------------------------
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
