@@ -13,6 +13,7 @@ from app.tools.registry import ToolRegistry
 from app.tools.vision import validate_image_path
 from app.knowledge.hardware import get_cpu_profile, render_cpu_explanation
 from app.vision.manager import VisionManager
+from app.agents import CognitiveRouter, CognitiveMode, CognitiveEngine
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -274,6 +275,8 @@ class Orchestrator:
         self.vision = vision
         self.memory_manager = MemoryManager(memory)
         self.models = ModelRouter()
+        self.cognitive_router = CognitiveRouter()
+        self.engine = CognitiveEngine(self._run_model_loop)
         self.log = logging.getLogger("jasper.orchestrator")
 
     def _tool_schemas(self, user_text: str = "") -> list[dict[str, Any]]:
@@ -402,21 +405,41 @@ class Orchestrator:
                     "observation."
                 ),
             })
-        provider, model = self.models.provider_for(user_text)
-        tools = self._tool_schemas(user_text)
+        mode = self.cognitive_router.route(user_text)
+        answer = await self.engine.run(mode, messages, user_text, on_chunk)
+
+        self.memory.add("assistant", answer)
+        return answer
+
+    async def _run_model_loop(self, messages: list[dict[str, Any]], system_prompt: str | None, use_tools: bool, mode: CognitiveMode, user_text: str, on_chunk: Callable[[str], None] | None = None) -> str:
+        provider, model = self.models.provider_for(mode)
+
+        # Augment system prompt if provided
+        loop_messages = list(messages)
+        if system_prompt:
+            # Append role prompt to core JASPER prompt
+            if loop_messages and loop_messages[0]["role"] == "system":
+                loop_messages[0] = {
+                    "role": "system",
+                    "content": f"{loop_messages[0]['content']}\n\n{system_prompt}"
+                }
+            else:
+                loop_messages.insert(0, {"role": "system", "content": system_prompt})
+
+        tools = self._tool_schemas(user_text) if use_tools else []
         max_output_tokens = _response_budget(user_text)
         self.log.info("response budget=%s tokens", max_output_tokens)
+
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
             if on_chunk is None:
-                response = await provider.chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens)
+                response = await provider.chat(loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens)
                 message = response.get("message", {})
             else:
-                message, response = await self._stream_model_round(provider, messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk)
+                message, response = await self._stream_model_round(provider, loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk)
             tool_calls = message.get("tool_calls") or []
-            messages.append(message)
+            loop_messages.append(message)
             if not tool_calls:
                 answer = message.get("content", "")
-                self.memory.add("assistant", answer)
                 self.log.info("chat completed model=%s tool_rounds=%s", model, round_number - 1)
                 return answer
             for call in tool_calls:
@@ -426,7 +449,7 @@ class Orchestrator:
                 except Exception as exc:
                     self.log.exception("tool request rejected name=%s", name)
                     result = json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
-                messages.append({"role": "tool", "tool_name": name, "content": result})
+                loop_messages.append({"role": "tool", "tool_name": name, "content": result})
         raise RuntimeError(f"Tool loop exceeded {MAX_TOOL_ROUNDS} rounds; request stopped for safety.")
 
     async def _stream_model_round(self, provider, messages: list[dict[str, Any]], *, model: str, tools: list[dict[str, Any]], max_output_tokens: int, on_chunk: Callable[[str], None]) -> tuple[dict[str, Any], dict[str, Any]]:
