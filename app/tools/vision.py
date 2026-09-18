@@ -56,7 +56,8 @@ def validate_image_path(raw_path: str) -> Path:
     # Read the first 12 bytes to verify the file contains actual image data.
     # This prevents an LLM from tricking the tool into reading an arbitrary
     # file that was given an image extension.
-    header = path.read_bytes()[:12]
+    with path.open("rb") as handle:
+        header = handle.read(12)
     if not any(header.startswith(sig) for sig in _IMAGE_SIGNATURES):
         raise ValueError(
             f"File does not contain valid image data: {path.name}"
