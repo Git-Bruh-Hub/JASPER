@@ -2,19 +2,21 @@ from __future__ import annotations
 
 from html import escape
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtCore import QMimeData, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QDragEnterEvent, QDragLeaveEvent, QDropEvent
+from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
 
 from app.core.config import JASPER_VOICE_ENABLED
 from app.ui.markdown_renderer import markdown_to_html
 from app.ui.styles import APP_STYLE
-from app.ui.vision_workspace import VisionWorkspace
+from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
 from app.ui.worker import JasperWorker
+from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
 
 
 class MainWindow(QMainWindow):
     request_text = Signal(str)
+    request_text_with_image = Signal(str, str)   # text, image_path
     request_voice = Signal()
     request_vision = Signal(str, str)
     request_refresh_status = Signal()
@@ -43,6 +45,8 @@ class MainWindow(QMainWindow):
         self._messages: list[tuple[str, str]] = []
         self._streaming_content = ""
         self._streaming_active = False
+        self._attached_image_path: str | None = None
+        self._chat_drag_active = False
         self.setWindowTitle("JASPER")
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
@@ -131,13 +135,38 @@ class MainWindow(QMainWindow):
         self.thinking_indicator.hide()
         chat_layout.addWidget(self.thinking_indicator)
         composer = QFrame(objectName="composer")
+        composer.setAcceptDrops(True)
         composer_layout = QHBoxLayout(composer)
         composer_layout.setContentsMargins(8, 6, 8, 6)
         composer_layout.setSpacing(6)
+        # --- Attach button (📎) ---
+        self.attach_button = QPushButton("📎")
+        self.attach_button.setObjectName("micButton")
+        self.attach_button.setToolTip("Attach an image (PNG, JPG, WebP)")
+        self.attach_button.clicked.connect(self._open_attachment)
+        composer_layout.addWidget(self.attach_button)
+        # --- Image chip (hidden by default) ---
+        self.attachment_chip = QFrame(objectName="attachmentChip")
+        self.attachment_chip.setContentsMargins(0, 0, 0, 0)
+        chip_layout = QHBoxLayout(self.attachment_chip)
+        chip_layout.setContentsMargins(6, 2, 4, 2)
+        chip_layout.setSpacing(4)
+        self.attachment_label = QLabel()
+        self.attachment_label.setObjectName("attachmentLabel")
+        chip_layout.addWidget(self.attachment_label)
+        dismiss_btn = QPushButton("✕")
+        dismiss_btn.setObjectName("attachmentDismiss")
+        dismiss_btn.setFixedSize(18, 18)
+        dismiss_btn.clicked.connect(self._clear_attachment)
+        chip_layout.addWidget(dismiss_btn)
+        self.attachment_chip.hide()
+        composer_layout.addWidget(self.attachment_chip)
+        # --- Text input ---
         self.input = QLineEdit()
         self.input.setObjectName("input")
         self.input.setPlaceholderText("Ask JASPER...")
         self.input.returnPressed.connect(self._send_text)
+        self.input.setAcceptDrops(False)
         composer_layout.addWidget(self.input, 1)
         self.mic_button = QPushButton("🎤")
         self.mic_button.setObjectName("micButton")
@@ -150,6 +179,7 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self._send_text)
         composer_layout.addWidget(self.send_button)
         chat_layout.addWidget(composer)
+        self.chat_page.setAcceptDrops(True)
         self.page_stack.addWidget(self.chat_page)
         self.page_stack.addWidget(self._placeholder_page("Tasks"))
         self.vision_page = VisionWorkspace()
@@ -212,6 +242,7 @@ class MainWindow(QMainWindow):
 
     def _connect_worker(self) -> None:
         self.request_text.connect(self.worker.send_text)
+        self.request_text_with_image.connect(self.worker.send_text_with_image)
         self.request_voice.connect(self.worker.listen_once)
         self.request_vision.connect(self.worker.analyze_vision)
         self.request_refresh_status.connect(self.worker.refresh_system_status)
@@ -260,13 +291,22 @@ class MainWindow(QMainWindow):
         text = self.input.text().strip()
         if not text or self.busy:
             return
-        self._append_message("You", text)
+        image_path = self._attached_image_path
+        display_text = text
+        if image_path:
+            from pathlib import Path as _Path
+            display_text = f"{text}\n\n📎 {_Path(image_path).name}"
+        self._append_message("You", display_text)
         self.input.clear()
+        self._clear_attachment()
         self._streaming_active = True
         self._streaming_content = ""
         self._show_thinking("JASPER is working")
         self._set_busy(True)
-        self.request_text.emit(text)
+        if image_path:
+            self.request_text_with_image.emit(text, image_path)
+        else:
+            self.request_text.emit(text)
 
     def _listen(self) -> None:
         if self.busy or not JASPER_VOICE_ENABLED:
@@ -365,6 +405,7 @@ class MainWindow(QMainWindow):
         self.busy = busy
         self.input.setEnabled(not busy)
         self.send_button.setEnabled(not busy)
+        self.attach_button.setEnabled(not busy)
         self.mic_button.setEnabled(not busy and JASPER_VOICE_ENABLED)
 
     def _show_thinking(self, label: str) -> None:
@@ -404,3 +445,83 @@ class MainWindow(QMainWindow):
         self.thread.quit()
         self.thread.wait(3000)
         event.accept()
+
+    # ------------------------------------------------------------------
+    # Image attachment helpers
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _open_attachment(self) -> None:
+        """Open a file-picker to select an image to attach to the next message."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Attach Image",
+            "",
+            OPEN_IMAGE_FILTER,
+        )
+        if path:
+            self._set_attachment(path)
+
+    def _set_attachment(self, path: str) -> None:
+        """Store the image path and show the filename chip."""
+        from pathlib import Path as _Path
+        self._attached_image_path = path
+        self.attachment_label.setText(f"📎 {_Path(path).name}")
+        self.attachment_chip.show()
+
+    @Slot()
+    def _clear_attachment(self) -> None:
+        """Dismiss the attached image and hide the chip."""
+        self._attached_image_path = None
+        self.attachment_label.setText("")
+        self.attachment_chip.hide()
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop for the Chat page
+    # ------------------------------------------------------------------
+
+    def _extract_valid_image_path(self, mime_data: QMimeData | None) -> str | None:
+        """Return the local path of the first valid image URL in mime_data, or None."""
+        if not mime_data or not mime_data.hasUrls():
+            return None
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            local = url.toLocalFile()
+            if not local:
+                continue
+            try:
+                from pathlib import Path as _Path
+                p = _Path(local).expanduser().resolve()
+                if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                    return str(p)
+            except Exception:
+                continue
+        return None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Accept image drops anywhere on the Chat page."""
+        if self.page_stack.currentIndex() != 0 or self.busy:
+            event.ignore()
+            return
+        if self._extract_valid_image_path(event.mimeData()) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self._chat_drag_active = False
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """On drop, attach the image and show the chip."""
+        self._chat_drag_active = False
+        if self.page_stack.currentIndex() != 0 or self.busy:
+            event.ignore()
+            return
+        path = self._extract_valid_image_path(event.mimeData())
+        if path is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self._set_attachment(path)

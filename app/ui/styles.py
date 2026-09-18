@@ -169,4 +169,27 @@ QLabel.statusChip {
     color: #a9a9a9;
     font-size: 8pt;
 }
+
+QFrame#attachmentChip {
+    background: #262626;
+    border: 1px solid #444;
+    border-radius: 5px;
+}
+
+QLabel#attachmentLabel {
+    color: #a8d8b2;
+    font-size: 9pt;
+}
+
+QPushButton#attachmentDismiss {
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 9pt;
+    padding: 0;
+}
+
+QPushButton#attachmentDismiss:hover {
+    color: #e06c75;
+}
 """

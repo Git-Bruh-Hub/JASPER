@@ -28,7 +28,7 @@ class JasperWorker(QObject):
         super().__init__()
         self.log = logging.getLogger("jasper.ui.worker")
         self.vision = build_vision_manager()
-        self.jasper = Orchestrator(build_registry(self.vision), PermissionManager(), SQLiteMemory())
+        self.jasper = Orchestrator(build_registry(self.vision), PermissionManager(), SQLiteMemory(), vision=self.vision)
         self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
     @Slot()
@@ -51,6 +51,26 @@ class JasperWorker(QObject):
             self.response_ready.emit("text", answer)
         except Exception as exc:
             self.log.exception("Desktop text request failed")
+            self.error.emit(str(exc))
+        finally:
+            self.status_changed.emit("STANDBY")
+            self.finished.emit()
+
+    @Slot(str, str)
+    def send_text_with_image(self, text: str, image_path: str) -> None:
+        """Send text alongside an attached image through the vision-to-text bridge."""
+        self.status_changed.emit("ACTIVE")
+        try:
+            answer = asyncio.run(
+                self.jasper.respond(
+                    text,
+                    on_chunk=self._emit_stream_chunk,
+                    image_path=image_path,
+                )
+            )
+            self.response_ready.emit("text", answer)
+        except Exception as exc:
+            self.log.exception("Desktop vision-chat request failed")
             self.error.emit(str(exc))
         finally:
             self.status_changed.emit("STANDBY")

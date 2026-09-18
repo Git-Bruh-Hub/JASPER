@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import MAX_HISTORY_MESSAGES
@@ -9,7 +10,9 @@ from app.memory.memory_manager import MemoryManager
 from app.models.model_router import ModelRouter
 from app.core.permissions import PermissionManager
 from app.tools.registry import ToolRegistry
+from app.tools.vision import validate_image_path
 from app.knowledge.hardware import get_cpu_profile, render_cpu_explanation
+from app.vision.manager import VisionManager
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -258,10 +261,17 @@ def _response_budget(text: str) -> int:
 
 
 class Orchestrator:
-    def __init__(self, registry: ToolRegistry, permissions: PermissionManager, memory):
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        permissions: PermissionManager,
+        memory,
+        vision: VisionManager | None = None,
+    ):
         self.registry = registry
         self.permissions = permissions
         self.memory = memory
+        self.vision = vision
         self.memory_manager = MemoryManager(memory)
         self.models = ModelRouter()
         self.log = logging.getLogger("jasper.orchestrator")
@@ -320,7 +330,12 @@ class Orchestrator:
             on_chunk(part)
             await asyncio.sleep(0.035)
 
-    async def respond(self, user_text: str, on_chunk: Callable[[str], None] | None = None) -> str:
+    async def respond(
+        self,
+        user_text: str,
+        on_chunk: Callable[[str], None] | None = None,
+        image_path: str | None = None,
+    ) -> str:
         self.memory.add("user", user_text)
         memory_command = self.memory_manager.parse_command(user_text)
         if memory_command is not None:
@@ -348,6 +363,28 @@ class Orchestrator:
                 self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
                 return answer
 
+        # --- Vision-to-text bridge (v0.5.2) ---------------------------------
+        # When the user attaches an image, analyze it with VisionManager first
+        # and inject the textual observation as a system message.  This is the
+        # same grounding pattern used by _grounding_context() for hardware data.
+        # Failure is graceful: a short error note is injected so the LLM can
+        # still respond to the user's text portion of the request.
+        vision_observation: str | None = None
+        if image_path and self.vision:
+            try:
+                validated = validate_image_path(image_path)
+                result = await self.vision.analyze(validated)
+                vision_observation = result.answer
+                self.log.info(
+                    "vision bridge completed path=%s chars=%s",
+                    validated.name,
+                    len(vision_observation),
+                )
+            except Exception as exc:
+                self.log.warning("vision bridge failed: %s", exc)
+                vision_observation = f"[Vision analysis could not be completed: {exc}]"
+        # ----------------------------------------------------------------------
+
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
@@ -357,6 +394,18 @@ class Orchestrator:
             info = _system_observation_tool_result(self.registry, self.permissions)
             messages.append({"role": "system", "content": _grounding_context(user_text, info)})
             self.log.info("added live system grounding for hardware explanation")
+        if vision_observation:
+            filename = Path(image_path).name if image_path else "attached image"
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"VISION OBSERVATION for the image the user attached "
+                    f"({filename}):\n\n{vision_observation}\n\n"
+                    "Use only the above visual observations when answering questions "
+                    "about the attached image. Do not add details not present in the "
+                    "observation."
+                ),
+            })
         provider, model = self.models.provider_for(user_text)
         tools = self._tool_schemas(user_text)
         max_output_tokens = _response_budget(user_text)
