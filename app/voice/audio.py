@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Callable
 
 
 def record_until_silence(
@@ -12,6 +13,7 @@ def record_until_silence(
     silence_seconds: float = 0.9,
     silence_threshold: float = 0.01,
     min_seconds: float = 0.6,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> Path:
     """Record microphone input until silence or the maximum duration.
 
@@ -59,6 +61,8 @@ def record_until_silence(
             while True:
                 now = time.monotonic()
                 elapsed = now - started_at
+                if cancel_callback and cancel_callback():
+                    break
                 if elapsed >= max_seconds:
                     break
                 if elapsed >= min_seconds and now - last_voice_at >= silence_seconds:
@@ -67,6 +71,8 @@ def record_until_silence(
     except Exception as exc:
         raise RuntimeError(f"Microphone recording failed: {exc}") from exc
 
+    if cancel_callback and cancel_callback():
+        return output
     if not frames:
         raise RuntimeError("No microphone audio was captured.")
 

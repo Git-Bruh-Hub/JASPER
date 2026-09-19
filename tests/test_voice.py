@@ -50,7 +50,7 @@ def test_voice_manager_run_once(tmp_path, monkeypatch):
     audio_file.write_bytes(b"fake audio")
     _patch_record(monkeypatch, audio_file)
 
-    async def responder(text: str) -> str:
+    async def responder(text: str, *, cancel_callback=None) -> str:
         assert text == "hello jasper"
         return "Hello back."
 
