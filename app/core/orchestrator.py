@@ -338,6 +338,7 @@ class Orchestrator:
         user_text: str,
         on_chunk: Callable[[str], None] | None = None,
         image_path: str | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> str:
         self.memory.add("user", user_text)
         memory_command = self.memory_manager.parse_command(user_text)
@@ -406,12 +407,12 @@ class Orchestrator:
                 ),
             })
         mode = self.cognitive_router.route(user_text)
-        answer = await self.engine.run(mode, messages, user_text, on_chunk)
+        answer = await self.engine.run(mode, messages, user_text, on_chunk, cancel_callback=cancel_callback)
 
         self.memory.add("assistant", answer)
         return answer
 
-    async def _run_model_loop(self, messages: list[dict[str, Any]], system_prompt: str | None, use_tools: bool, mode: CognitiveMode, user_text: str, on_chunk: Callable[[str], None] | None = None) -> str:
+    async def _run_model_loop(self, messages: list[dict[str, Any]], system_prompt: str | None, use_tools: bool, mode: CognitiveMode, user_text: str, on_chunk: Callable[[str], None] | None = None, cancel_callback: Callable[[], bool] | None = None) -> str:
         provider, model = self.models.provider_for(mode)
 
         # Augment system prompt if provided
@@ -431,11 +432,18 @@ class Orchestrator:
         self.log.info("response budget=%s tokens", max_output_tokens)
 
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError()
+
             if on_chunk is None:
-                response = await provider.chat(loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens)
+                response = await provider.chat(loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens, cancel_callback=cancel_callback)
                 message = response.get("message", {})
             else:
-                message, response = await self._stream_model_round(provider, loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk)
+                message, response = await self._stream_model_round(provider, loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk, cancel_callback=cancel_callback)
+
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError()
+
             tool_calls = message.get("tool_calls") or []
             loop_messages.append(message)
             if not tool_calls:
@@ -452,11 +460,11 @@ class Orchestrator:
                 loop_messages.append({"role": "tool", "tool_name": name, "content": result})
         raise RuntimeError(f"Tool loop exceeded {MAX_TOOL_ROUNDS} rounds; request stopped for safety.")
 
-    async def _stream_model_round(self, provider, messages: list[dict[str, Any]], *, model: str, tools: list[dict[str, Any]], max_output_tokens: int, on_chunk: Callable[[str], None]) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def _stream_model_round(self, provider, messages: list[dict[str, Any]], *, model: str, tools: list[dict[str, Any]], max_output_tokens: int, on_chunk: Callable[[str], None], cancel_callback: Callable[[], bool] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         content_parts: list[str] = []
         final_chunk: dict[str, Any] = {}
         final_tool_calls: list[dict[str, Any]] = []
-        async for chunk in provider.stream_chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens):
+        async for chunk in provider.stream_chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens, cancel_callback=cancel_callback):
             final_chunk = chunk
             message = chunk.get("message") or {}
             piece = message.get("content") or ""

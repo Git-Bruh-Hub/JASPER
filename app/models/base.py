@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 
 class ModelProvider(ABC):
@@ -13,6 +13,7 @@ class ModelProvider(ABC):
         keep_alive: str | int = "5m",
         think: bool | None = None,
         max_output_tokens: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -25,6 +26,7 @@ class ModelProvider(ABC):
         keep_alive: str | int = "5m",
         think: bool | None = None,
         max_output_tokens: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield streaming response chunks from providers that support them."""
         raise NotImplementedError

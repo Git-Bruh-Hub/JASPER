@@ -130,7 +130,7 @@ class TestRouterNoFalsePositives:
 @pytest.mark.asyncio
 async def test_engine_simple():
     """SIMPLE: single model call with tools and streaming."""
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         assert mode == CognitiveMode.SIMPLE
         assert user_text == "hello"
         assert use_tools is True
@@ -152,7 +152,7 @@ async def test_engine_collaborative_sequencing_and_streaming():
     """COLLABORATIVE: Planner → Finalizer. Only Finalizer gets on_chunk."""
     calls = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         assert mode == CognitiveMode.COLLABORATIVE
         assert user_text == "test task"
 
@@ -190,7 +190,7 @@ async def test_engine_deep_sequencing_and_context():
     """DEEP: Planner → Analyst → Critic → Finalizer with correct context propagation."""
     calls = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         assert mode == CognitiveMode.DEEP
         assert user_text == "deep task"
         user_msg = next(m["content"] for m in messages if m["role"] == "user")
@@ -251,7 +251,7 @@ async def test_planner_failure_halts_deep():
     """If Planner raises, subsequent stages must NOT run."""
     calls = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         if "PLANNER" in str(system_prompt):
             calls.append("planner")
             raise RuntimeError("Planner failed")
@@ -269,7 +269,7 @@ async def test_analyst_failure_halts_deep():
     """If Analyst raises, Critic and Finalizer must NOT run."""
     calls = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         if "PLANNER" in str(system_prompt):
             calls.append("planner")
             return "plan"
@@ -290,7 +290,7 @@ async def test_critic_failure_halts_deep():
     """If Critic raises, Finalizer must NOT run."""
     calls = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         if "PLANNER" in str(system_prompt):
             calls.append("planner")
             return "plan"
@@ -325,7 +325,7 @@ async def test_engine_passes_only_system_context_to_internal_stages():
         {"role": "system", "content": "VISION OBS"},
     ]
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         # Every stage should only see the two system messages + one user msg
         roles = [m["role"] for m in messages]
         assert "assistant" not in roles, "Old conversation should not leak"
@@ -351,7 +351,7 @@ async def test_orchestrator_simple_uses_fast_model():
     used_models = []
 
     class StubProvider:
-        async def chat(self, messages, *, model, tools, max_output_tokens):
+        async def chat(self, messages, *, model, tools, max_output_tokens, cancel_callback=None):
             used_models.append(model)
             return {"message": {"role": "assistant", "content": "ok"}}
 
@@ -390,7 +390,7 @@ async def test_orchestrator_collaborative_uses_main_model():
     used_models = []
 
     class StubProvider:
-        async def chat(self, messages, *, model, tools, max_output_tokens):
+        async def chat(self, messages, *, model, tools, max_output_tokens, cancel_callback=None):
             used_models.append(model)
             return {"message": {"role": "assistant", "content": "ok"}}
 
@@ -435,7 +435,7 @@ async def test_cognitive_router_called_once_per_respond():
     from app.core.orchestrator import Orchestrator
 
     class StubProvider:
-        async def chat(self, messages, *, model, tools, max_output_tokens):
+        async def chat(self, messages, *, model, tools, max_output_tokens, cancel_callback=None):
             return {"message": {"role": "assistant", "content": "ok"}}
 
     class StubModels:
@@ -474,7 +474,7 @@ async def test_run_model_loop_augments_system_prompt():
     from app.core.orchestrator import Orchestrator
 
     class DummyProvider:
-        async def chat(self, messages, **kwargs):
+        async def chat(self, messages, cancel_callback=None, **kwargs):
             return {"message": {"role": "assistant", "content": "dummy"}}
 
     class DummyModels:
@@ -521,7 +521,7 @@ async def test_only_finalizer_streams_in_collaborative():
     """In COLLABORATIVE, only Finalizer's on_chunk must be non-None."""
     chunk_receivers = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         label = "planner" if "PLANNER" in str(system_prompt) else "finalizer"
         chunk_receivers.append((label, on_chunk is not None))
         return "output"
@@ -537,7 +537,7 @@ async def test_only_finalizer_streams_in_deep():
     """In DEEP, only Finalizer's on_chunk must be non-None."""
     chunk_receivers = []
 
-    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None):
+    async def fake_run_model(messages, system_prompt, use_tools, mode, user_text, on_chunk=None, cancel_callback=None):
         for role in ("PLANNER", "ANALYST", "CRITIC", "FINALIZER"):
             if role in str(system_prompt):
                 chunk_receivers.append((role.lower(), on_chunk is not None))

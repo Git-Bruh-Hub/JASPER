@@ -218,6 +218,18 @@ def _ollama_models() -> dict:
 
     return {"available": True, "models": models}
 
+def _ollama_tags() -> list[str]:
+    """Read available models from Ollama."""
+    from app.core.config import OLLAMA_HOST
+    try:
+        response = httpx.get(f"{OLLAMA_HOST}/api/tags", timeout=1.5)
+        response.raise_for_status()
+        payload = response.json()
+        return [m.get("name") for m in payload.get("models", []) if m.get("name")]
+    except (httpx.HTTPError, ValueError):
+        return []
+
+
 
 def get_system_info() -> dict:
     """Return read-only hardware, OS, storage, and local Ollama state.
@@ -231,6 +243,16 @@ def get_system_info() -> dict:
 
     cpu_name = _windows_cpu_name() or platform.processor() or platform.machine()
     gpus = _nvidia_gpus()
+    ollama_state = _ollama_models()
+    available_tags = _ollama_tags()
+
+    from app.core.config import JASPER_MODEL, JASPER_FAST_MODEL, JASPER_VISION_MODEL
+
+    def _is_model_available(cfg_model: str) -> bool:
+        if not ollama_state.get("available"):
+            return False
+        # If it matches a tag exactly or without the tag portion if implied
+        return any(cfg_model == tag or cfg_model == tag.split(":")[0] for tag in available_tags)
 
     return {
         "os": platform.platform(),
@@ -247,5 +269,8 @@ def get_system_info() -> dict:
         "gpu": gpus,
         "storage": storage,
         "system_drive": storage[0] if storage else None,
-        "ollama": _ollama_models(),
+        "ollama": ollama_state,
+        "model_fast_available": _is_model_available(JASPER_FAST_MODEL) if ollama_state.get("available") else False,
+        "model_main_available": _is_model_available(JASPER_MODEL) if ollama_state.get("available") else False,
+        "model_vision_available": _is_model_available(JASPER_VISION_MODEL) if ollama_state.get("available") else False,
     }

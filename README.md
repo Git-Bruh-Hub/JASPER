@@ -1,4 +1,4 @@
-# JASPER v0.5.0
+# JASPER v0.6.1
 
 **JASPER = Just Another Smart Program Executing Request**
 
@@ -70,7 +70,7 @@ The CLI remains available for development:
 python -m app.main
 ```
 
-## v0.5.0 — Vision Foundation
+## v0.6.1 — Vision Foundation & Adaptive Cognition
 
 v0.5 adds a provider-independent local vision layer without giving the vision model permission to control the computer.
 
@@ -118,7 +118,7 @@ Example:
 :vision C:\Users\Name\Pictures\test.png What is in this image?
 ```
 
-Safety boundary for v0.5.0:
+Safety boundary for v0.6.1:
 
 - Image files are read-only inputs.
 - Vision analysis does not click, type, delete, execute commands, or modify the machine.

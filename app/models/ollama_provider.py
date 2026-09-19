@@ -1,4 +1,4 @@
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 import json
 import logging
 
@@ -46,6 +46,7 @@ class OllamaProvider(ModelProvider):
         keep_alive: str | int = JASPER_KEEP_ALIVE,
         think: bool | None = JASPER_THINK,
         max_output_tokens: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         payload = self._payload(
             messages,
@@ -73,6 +74,7 @@ class OllamaProvider(ModelProvider):
         keep_alive: str | int = JASPER_KEEP_ALIVE,
         think: bool | None = JASPER_THINK,
         max_output_tokens: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         payload = self._payload(
             messages,
@@ -88,6 +90,8 @@ class OllamaProvider(ModelProvider):
             async with client.stream("POST", f"{self.host}/api/chat", json=payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
+                    if cancel_callback and cancel_callback():
+                        break
                     if not line:
                         continue
                     chunk = json.loads(line)

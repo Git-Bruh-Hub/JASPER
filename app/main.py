@@ -3,6 +3,7 @@ import logging
 import shlex
 
 from app.core.config import (
+    JASPER_VERSION,
     JASPER_PIPER_CONFIG,
     JASPER_PIPER_MODEL,
     JASPER_PIPER_USE_CUDA,
@@ -213,7 +214,7 @@ async def main():
     jasper = Orchestrator(build_registry(vision), PermissionManager(), SQLiteMemory())
     voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
-    print("JASPER v0.5.0")
+    print(f"JASPER {JASPER_VERSION}")
     print("Tool calling + explicit long-term memory + vision foundation enabled.")
     if voice:
         print("Voice enabled. Use ':voice' for one turn, ':conversation' for continuous conversation, or ':speak <text>'.")

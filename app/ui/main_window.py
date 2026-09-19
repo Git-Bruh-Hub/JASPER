@@ -20,6 +20,7 @@ class MainWindow(QMainWindow):
     request_voice = Signal()
     request_vision = Signal(str, str)
     request_refresh_status = Signal()
+    request_cancel = Signal()
 
     NAV_ITEMS = (
         ("💬  Chat", "Chat"),
@@ -47,6 +48,13 @@ class MainWindow(QMainWindow):
         self._streaming_active = False
         self._attached_image_path: str | None = None
         self._chat_drag_active = False
+
+        # Periodic status refresh (every 30 seconds)
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(30000)
+        self._status_timer.timeout.connect(self.request_refresh_status.emit)
+        self._status_timer.start()
+
         self.setWindowTitle("JASPER")
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
@@ -124,6 +132,14 @@ class MainWindow(QMainWindow):
         self.workspace_hint.setObjectName("workspaceHint")
         header.addWidget(self.workspace_hint)
         chat_layout.addLayout(header)
+
+        self.system_readiness_label = QLabel()
+        self.system_readiness_label.setObjectName("systemReadiness")
+        self.system_readiness_label.setWordWrap(True)
+        self.system_readiness_label.setStyleSheet("background: #242424; padding: 10px; border-radius: 4px; color: #bdbdbd; margin-bottom: 8px;")
+        self.system_readiness_label.hide()
+        chat_layout.addWidget(self.system_readiness_label)
+
         self.conversation = QTextBrowser()
         self.conversation.setObjectName("conversation")
         self.conversation.setOpenExternalLinks(True)
@@ -176,7 +192,7 @@ class MainWindow(QMainWindow):
         composer_layout.addWidget(self.mic_button)
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("sendButton")
-        self.send_button.clicked.connect(self._send_text)
+        self.send_button.clicked.connect(self._on_send_clicked)
         composer_layout.addWidget(self.send_button)
         chat_layout.addWidget(composer)
         self.chat_page.setAcceptDrops(True)
@@ -228,12 +244,6 @@ class MainWindow(QMainWindow):
         self.voice_status = QLabel("Voice ○")
         self.voice_status.setProperty("class", "statusChip")
         layout.addWidget(self.voice_status)
-        memory = QLabel("Memory ●")
-        memory.setProperty("class", "statusChip")
-        layout.addWidget(memory)
-        tools = QLabel("Tools ●")
-        tools.setProperty("class", "statusChip")
-        layout.addWidget(tools)
         self.gpu_status = QLabel("GPU ○")
         self.gpu_status.setProperty("class", "statusChip")
         layout.addWidget(self.gpu_status)
@@ -246,6 +256,7 @@ class MainWindow(QMainWindow):
         self.request_voice.connect(self.worker.listen_once)
         self.request_vision.connect(self.worker.analyze_vision)
         self.request_refresh_status.connect(self.worker.refresh_system_status)
+        self.request_cancel.connect(self.worker.cancel_request)
         self.vision_page.analyze_requested.connect(self._analyze_vision)
         self.worker.response_stream.connect(self._on_stream_chunk)
         self.worker.response_ready.connect(self._on_response)
@@ -286,6 +297,14 @@ class MainWindow(QMainWindow):
         for i, button in enumerate(self.nav_buttons):
             button.setChecked(i == index)
         self.workspace_hint.setText("Vision workspace" if index == 2 else "Ready" if index == 0 else "Workspace")
+
+    @Slot()
+    def _on_send_clicked(self) -> None:
+        if self.busy:
+            self.request_cancel.emit()
+            self.send_button.setEnabled(False)  # Disable briefly to prevent spam
+        else:
+            self._send_text()
 
     def _send_text(self) -> None:
         text = self.input.text().strip()
@@ -401,12 +420,42 @@ class MainWindow(QMainWindow):
         else:
             self.gpu_status.setText("GPU ○")
 
+        # Display startup diagnostics once
+        if not hasattr(self, "_diagnostics_shown"):
+            self._diagnostics_shown = True
+
+            fast_model = "●" if info.get("model_fast_available") else "○"
+            main_model = "●" if info.get("model_main_available") else "○"
+            vision_model = "●" if info.get("model_vision_available") else "○"
+            ollama_status = "●" if ollama.get("available") else "○"
+            voice_status = "●" if JASPER_VOICE_ENABLED else "○"
+
+            gpu_desc = f"{gpus[0].get('name')} ({gpus[0].get('vram_total_gb', 0)}GB)" if gpus else "Not detected"
+            ram_desc = f"{info.get('ram_total_gb', 0)}GB ({info.get('ram_available_gb', 0)}GB available)"
+            python_desc = info.get("python", "Unknown")
+
+            msg = (
+                f"<b>System Readiness</b><br><br>"
+                f"Ollama API: {ollama_status} | Fast Model: {fast_model} | Main Model: {main_model} | Vision Model: {vision_model}<br>"
+                f"Voice Input: {voice_status} | GPU: {gpu_desc} | RAM: {ram_desc} | Python: {python_desc}"
+            )
+            self.system_readiness_label.setText(msg)
+            self.system_readiness_label.show()
+            QTimer.singleShot(15000, self.system_readiness_label.hide)
+
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
         self.input.setEnabled(not busy)
-        self.send_button.setEnabled(not busy)
         self.attach_button.setEnabled(not busy)
         self.mic_button.setEnabled(not busy and JASPER_VOICE_ENABLED)
+
+        self.send_button.setEnabled(True)
+        if busy:
+            self.send_button.setText("Stop")
+            self.send_button.setStyleSheet("background-color: #8b0000; color: white;")
+        else:
+            self.send_button.setText("Send")
+            self.send_button.setStyleSheet("")
 
     def _show_thinking(self, label: str) -> None:
         self._thinking_step = 0
@@ -442,6 +491,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self._tray is not None:
             self._tray.hide()
+        self._status_timer.stop()
         self.thread.quit()
         self.thread.wait(3000)
         event.accept()

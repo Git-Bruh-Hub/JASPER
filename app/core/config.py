@@ -2,6 +2,8 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
+JASPER_VERSION = "v0.6.1"
+
 load_dotenv()
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"

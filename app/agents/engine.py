@@ -7,6 +7,7 @@ context for each agent stage.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Coroutine
 
@@ -32,6 +33,7 @@ class CognitiveEngine:
             async def run_model(
                 messages, system_prompt, use_tools,
                 mode, user_text, on_chunk=None,
+                cancel_callback=None,
             ) -> str
         """
         self.run_model = run_model_callback
@@ -47,15 +49,16 @@ class CognitiveEngine:
         context_messages: list[dict[str, Any]],
         user_text: str,
         on_chunk: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> str:
         self.log.info("starting cognitive run mode=%s", mode.value)
 
         if mode == CognitiveMode.SIMPLE:
-            return await self._run_simple(context_messages, user_text, on_chunk)
+            return await self._run_simple(context_messages, user_text, on_chunk, cancel_callback)
         if mode == CognitiveMode.COLLABORATIVE:
-            return await self._run_collaborative(context_messages, user_text, on_chunk)
+            return await self._run_collaborative(context_messages, user_text, on_chunk, cancel_callback)
         if mode == CognitiveMode.DEEP:
-            return await self._run_deep(context_messages, user_text, on_chunk)
+            return await self._run_deep(context_messages, user_text, on_chunk, cancel_callback)
 
         raise ValueError(f"Unknown cognitive mode: {mode}")
 
@@ -77,6 +80,7 @@ class CognitiveEngine:
         context_messages: list[dict[str, Any]],
         user_text: str,
         on_chunk: Callable[[str], None] | None,
+        cancel_callback: Callable[[], bool] | None,
     ) -> str:
         """Standard single-agent flow — pass full context through."""
         messages = list(context_messages)
@@ -88,6 +92,7 @@ class CognitiveEngine:
             mode=CognitiveMode.SIMPLE,
             user_text=user_text,
             on_chunk=on_chunk,
+            cancel_callback=cancel_callback,
         )
 
     async def _run_collaborative(
@@ -95,6 +100,7 @@ class CognitiveEngine:
         context_messages: list[dict[str, Any]],
         user_text: str,
         on_chunk: Callable[[str], None] | None,
+        cancel_callback: Callable[[], bool] | None,
     ) -> str:
         system_ctx = self._system_messages(context_messages)
 
@@ -111,8 +117,11 @@ class CognitiveEngine:
             use_tools=False,
             mode=CognitiveMode.COLLABORATIVE,
             user_text=user_text,
+            cancel_callback=cancel_callback,
         )
         self.log.info("stage=planner completed")
+        if cancel_callback and cancel_callback():
+            raise asyncio.CancelledError()
 
         # -- Finalizer -----------------------------------------------------
         self.log.info("stage=finalizer starting")
@@ -131,6 +140,7 @@ class CognitiveEngine:
             mode=CognitiveMode.COLLABORATIVE,
             user_text=user_text,
             on_chunk=on_chunk,
+            cancel_callback=cancel_callback,
         )
         self.log.info("stage=finalizer completed")
         return answer
@@ -140,6 +150,7 @@ class CognitiveEngine:
         context_messages: list[dict[str, Any]],
         user_text: str,
         on_chunk: Callable[[str], None] | None,
+        cancel_callback: Callable[[], bool] | None,
     ) -> str:
         system_ctx = self._system_messages(context_messages)
 
@@ -156,8 +167,11 @@ class CognitiveEngine:
             use_tools=False,
             mode=CognitiveMode.DEEP,
             user_text=user_text,
+            cancel_callback=cancel_callback,
         )
         self.log.info("stage=planner completed")
+        if cancel_callback and cancel_callback():
+            raise asyncio.CancelledError()
 
         # -- Analyst -------------------------------------------------------
         self.log.info("stage=analyst starting")
@@ -175,8 +189,11 @@ class CognitiveEngine:
             use_tools=True,
             mode=CognitiveMode.DEEP,
             user_text=user_text,
+            cancel_callback=cancel_callback,
         )
         self.log.info("stage=analyst completed")
+        if cancel_callback and cancel_callback():
+            raise asyncio.CancelledError()
 
         # -- Critic --------------------------------------------------------
         self.log.info("stage=critic starting")
@@ -195,8 +212,11 @@ class CognitiveEngine:
             use_tools=False,
             mode=CognitiveMode.DEEP,
             user_text=user_text,
+            cancel_callback=cancel_callback,
         )
         self.log.info("stage=critic completed")
+        if cancel_callback and cancel_callback():
+            raise asyncio.CancelledError()
 
         # -- Finalizer -----------------------------------------------------
         self.log.info("stage=finalizer starting")
@@ -217,6 +237,7 @@ class CognitiveEngine:
             mode=CognitiveMode.DEEP,
             user_text=user_text,
             on_chunk=on_chunk,
+            cancel_callback=cancel_callback,
         )
         self.log.info("stage=finalizer completed")
         return answer

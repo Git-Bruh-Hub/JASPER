@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -30,6 +31,28 @@ class JasperWorker(QObject):
         self.vision = build_vision_manager()
         self.jasper = Orchestrator(build_registry(self.vision), PermissionManager(), SQLiteMemory(), vision=self.vision)
         self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
+        self._cancel_event = threading.Event()
+
+    @Slot()
+    def cancel_request(self) -> None:
+        """Cooperative cancellation of the active request."""
+        self._cancel_event.set()
+
+    def _handle_error(self, exc: Exception, context: str) -> None:
+        self.log.exception(f"{context} failed")
+
+        # Friendly error mapping
+        err_str = str(exc).lower()
+        if isinstance(exc, asyncio.CancelledError):
+            return  # Will be handled gracefully
+        elif "connection" in err_str or "connect" in err_str or "11434" in err_str:
+            self.error.emit("Ollama is currently unavailable. Please check if it's running.")
+        elif "not found" in err_str and "image" in err_str:
+            self.error.emit("The specified image could not be found.")
+        elif "model" in err_str and "not found" in err_str:
+            self.error.emit("The required AI model is not downloaded or available in Ollama.")
+        else:
+            self.error.emit("An unexpected internal error occurred. Please check the logs.")
 
     @Slot()
     def refresh_system_status(self) -> None:
@@ -45,13 +68,14 @@ class JasperWorker(QObject):
 
     @Slot(str)
     def send_text(self, text: str) -> None:
+        self._cancel_event.clear()
         self.status_changed.emit("ACTIVE")
         try:
-            answer = asyncio.run(self.jasper.respond(text, on_chunk=self._emit_stream_chunk))
-            self.response_ready.emit("text", answer)
+            answer = asyncio.run(self.jasper.respond(text, on_chunk=self._emit_stream_chunk, cancel_callback=self._cancel_event.is_set))
+            if not self._cancel_event.is_set():
+                self.response_ready.emit("text", answer)
         except Exception as exc:
-            self.log.exception("Desktop text request failed")
-            self.error.emit(str(exc))
+            self._handle_error(exc, "Desktop text request")
         finally:
             self.status_changed.emit("STANDBY")
             self.finished.emit()
@@ -59,6 +83,7 @@ class JasperWorker(QObject):
     @Slot(str, str)
     def send_text_with_image(self, text: str, image_path: str) -> None:
         """Send text alongside an attached image through the vision-to-text bridge."""
+        self._cancel_event.clear()
         self.status_changed.emit("ACTIVE")
         try:
             answer = asyncio.run(
@@ -66,25 +91,28 @@ class JasperWorker(QObject):
                     text,
                     on_chunk=self._emit_stream_chunk,
                     image_path=image_path,
+                    cancel_callback=self._cancel_event.is_set,
                 )
             )
-            self.response_ready.emit("text", answer)
+            if not self._cancel_event.is_set():
+                self.response_ready.emit("text", answer)
         except Exception as exc:
-            self.log.exception("Desktop vision-chat request failed")
-            self.error.emit(str(exc))
+            self._handle_error(exc, "Desktop vision-chat request")
         finally:
             self.status_changed.emit("STANDBY")
             self.finished.emit()
 
     @Slot(str, str)
     def analyze_vision(self, image_path: str, prompt: str) -> None:
+        self._cancel_event.clear()
         self.status_changed.emit("ACTIVE")
         try:
+            # We don't have cancellation plumbed into standalone VisionManager yet, but we'll try
             result = asyncio.run(self.vision.analyze(image_path, prompt))
-            self.vision_ready.emit(result.answer)
+            if not self._cancel_event.is_set():
+                self.vision_ready.emit(result.answer)
         except Exception as exc:
-            self.log.exception("Desktop vision request failed")
-            self.error.emit(str(exc))
+            self._handle_error(exc, "Desktop vision request")
         finally:
             self.status_changed.emit("STANDBY")
             self.finished.emit()
@@ -96,16 +124,18 @@ class JasperWorker(QObject):
             self.finished.emit()
             return
 
+        self._cancel_event.clear()
         self.status_changed.emit("LISTENING")
         try:
             spoken_text, answer = asyncio.run(self.voice.run_once(self.jasper.respond))
+            if self._cancel_event.is_set():
+                return
             if not spoken_text:
                 self.response_ready.emit("voice_empty", "I didn't detect any speech.")
             else:
                 self.response_ready.emit("voice", f"{spoken_text}\n\n{answer}")
         except Exception as exc:
-            self.log.exception("Desktop voice request failed")
-            self.error.emit(str(exc))
+            self._handle_error(exc, "Desktop voice request")
         finally:
             self.status_changed.emit("STANDBY")
             self.finished.emit()
@@ -117,12 +147,12 @@ class JasperWorker(QObject):
             self.finished.emit()
             return
 
+        self._cancel_event.clear()
         self.status_changed.emit("SPEAKING")
         try:
             self.voice.speak(text)
         except Exception as exc:
-            self.log.exception("Desktop TTS request failed")
-            self.error.emit(str(exc))
+            self._handle_error(exc, "Desktop TTS request")
         finally:
             self.status_changed.emit("STANDBY")
             self.finished.emit()

@@ -95,7 +95,7 @@ async def test_respond_with_image_injects_observation(tmp_path: Path) -> None:
 
     captured_messages: list[list[dict]] = []
 
-    async def fake_chat(messages, *, model, tools, max_output_tokens):
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
         captured_messages.append(messages)
         return {"message": {"role": "assistant", "content": "I see a red circle."}}
 
@@ -117,7 +117,7 @@ async def test_respond_without_image_skips_vision(tmp_path: Path) -> None:
     vm.analyze = AsyncMock(wraps=vm.analyze)  # spy
     orchestrator = _make_orchestrator(vision=vm, tmp_path=tmp_path)
 
-    async def fake_chat(messages, *, model, tools, max_output_tokens):
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
         return {"message": {"role": "assistant", "content": "Hello."}}
 
     with patch.object(orchestrator.models.local, "chat", side_effect=fake_chat):
@@ -133,7 +133,7 @@ async def test_respond_observation_not_injected_when_no_vision_manager(tmp_path:
 
     captured_messages: list[list[dict]] = []
 
-    async def fake_chat(messages, *, model, tools, max_output_tokens):
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
         captured_messages.append(messages)
         return {"message": {"role": "assistant", "content": "OK."}}
 
@@ -159,7 +159,7 @@ async def test_respond_raises_when_vision_fails(tmp_path: Path) -> None:
 
     llm_called = False
 
-    async def fake_chat(messages, *, model, tools, max_output_tokens):
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
         nonlocal llm_called
         llm_called = True
         return {"message": {"role": "assistant", "content": "should not reach here"}}
@@ -182,7 +182,7 @@ async def test_respond_raises_for_invalid_image_path(tmp_path: Path) -> None:
 
     llm_called = False
 
-    async def fake_chat(messages, *, model, tools, max_output_tokens):
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
         nonlocal llm_called
         llm_called = True
         return {"message": {"role": "assistant", "content": "should not reach here"}}
@@ -206,7 +206,7 @@ async def test_respond_includes_filename_in_observation_header(tmp_path: Path) -
 
     captured: list[list[dict]] = []
 
-    async def fake_chat(messages, *, model, tools, max_output_tokens):
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
         captured.append(messages)
         return {"message": {"role": "assistant", "content": "ok"}}
 
