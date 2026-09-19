@@ -50,7 +50,7 @@ class VoiceManager:
         self.min_seconds = min_seconds
         self.log = logging.getLogger("jasper.voice")
 
-    def listen_once(self) -> str:
+    def listen_once(self, *, cancel_callback: Callable[[], bool] | None = None) -> str:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             prefix="jasper_", suffix=".wav", dir=self.temp_dir, delete=False
@@ -65,7 +65,10 @@ class VoiceManager:
                 silence_seconds=self.silence_seconds,
                 silence_threshold=self.silence_threshold,
                 min_seconds=self.min_seconds,
+                cancel_callback=cancel_callback,
             )
+            if cancel_callback and cancel_callback():
+                return ""
             text = self.stt.transcribe(audio_path).strip()
             self.log.info("voice input transcribed chars=%s", len(text))
             return text
@@ -74,6 +77,11 @@ class VoiceManager:
 
     def speak(self, text: str) -> None:
         self.tts.speak(text)
+
+    def stop(self) -> None:
+        stop = getattr(self.tts, "stop", None)
+        if callable(stop):
+            stop()
 
     @staticmethod
     def _normalize_stop_text(text: str) -> str:
@@ -91,11 +99,21 @@ class VoiceManager:
         """
         return cls._normalize_stop_text(text) in _DEFAULT_STOP_PHRASES
 
-    async def run_once(self, responder: Callable[[str], Awaitable[str]]) -> tuple[str, str]:
-        user_text = self.listen_once()
-        if not user_text:
+    async def run_once(
+        self,
+        responder: Callable[..., Awaitable[str]],
+        *,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> tuple[str, str]:
+        user_text = self.listen_once(cancel_callback=cancel_callback)
+        if not user_text or (cancel_callback and cancel_callback()):
             return "", ""
-        answer = await responder(user_text)
+        if cancel_callback is None:
+            answer = await responder(user_text)
+        else:
+            answer = await responder(user_text, cancel_callback=cancel_callback)
+        if cancel_callback and cancel_callback():
+            return user_text, ""
         self.speak(answer)
         return user_text, answer
 

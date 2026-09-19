@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from app.core.config import JASPER_VOICE_ENABLED
+from app.ui.cancellation import AsyncRequestController
 from app.core.orchestrator import Orchestrator
 from app.core.permissions import PermissionManager
 from app.main import build_registry, build_vision_manager, build_voice_manager
@@ -24,6 +24,7 @@ class JasperWorker(QObject):
     system_status_ready = Signal(dict)
     error = Signal(str)
     finished = Signal()
+    cancelled = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -31,12 +32,19 @@ class JasperWorker(QObject):
         self.vision = build_vision_manager()
         self.jasper = Orchestrator(build_registry(self.vision), PermissionManager(), SQLiteMemory(), vision=self.vision)
         self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
-        self._cancel_event = threading.Event()
+        self._request_control = AsyncRequestController()
 
-    @Slot()
+    def begin_request(self) -> None:
+        """Prepare a new request from the GUI thread."""
+        self._request_control.begin()
+
     def cancel_request(self) -> None:
-        """Cooperative cancellation of the active request."""
-        self._cancel_event.set()
+        """Thread-safe cancellation invoked directly from the GUI thread."""
+        self._request_control.cancel()
+        if self.voice is not None:
+            stop = getattr(self.voice, "stop", None)
+            if callable(stop):
+                stop()
 
     def _handle_error(self, exc: Exception, context: str) -> None:
         self.log.exception(f"{context} failed")
@@ -63,17 +71,26 @@ class JasperWorker(QObject):
             self.error.emit(f"System status unavailable: {exc}")
 
     def _emit_stream_chunk(self, chunk: str) -> None:
-        if chunk:
+        if chunk and not self._request_control.is_cancelled():
             self.response_stream.emit(chunk)
 
     @Slot(str)
     def send_text(self, text: str) -> None:
-        self._cancel_event.clear()
         self.status_changed.emit("ACTIVE")
         try:
-            answer = asyncio.run(self.jasper.respond(text, on_chunk=self._emit_stream_chunk, cancel_callback=self._cancel_event.is_set))
-            if not self._cancel_event.is_set():
+            answer = self._request_control.run(
+                self.jasper.respond(
+                    text,
+                    on_chunk=self._emit_stream_chunk,
+                    cancel_callback=self._request_control.is_cancelled,
+                )
+            )
+            if not self._request_control.is_cancelled():
                 self.response_ready.emit("text", answer)
+        except asyncio.CancelledError:
+            self.log.info("desktop text request cancelled")
+            self.status_changed.emit("CANCELLED")
+            self.cancelled.emit()
         except Exception as exc:
             self._handle_error(exc, "Desktop text request")
         finally:
@@ -83,19 +100,22 @@ class JasperWorker(QObject):
     @Slot(str, str)
     def send_text_with_image(self, text: str, image_path: str) -> None:
         """Send text alongside an attached image through the vision-to-text bridge."""
-        self._cancel_event.clear()
         self.status_changed.emit("ACTIVE")
         try:
-            answer = asyncio.run(
+            answer = self._request_control.run(
                 self.jasper.respond(
                     text,
                     on_chunk=self._emit_stream_chunk,
                     image_path=image_path,
-                    cancel_callback=self._cancel_event.is_set,
+                    cancel_callback=self._request_control.is_cancelled,
                 )
             )
-            if not self._cancel_event.is_set():
+            if not self._request_control.is_cancelled():
                 self.response_ready.emit("text", answer)
+        except asyncio.CancelledError:
+            self.log.info("desktop vision-chat request cancelled")
+            self.status_changed.emit("CANCELLED")
+            self.cancelled.emit()
         except Exception as exc:
             self._handle_error(exc, "Desktop vision-chat request")
         finally:
@@ -104,13 +124,17 @@ class JasperWorker(QObject):
 
     @Slot(str, str)
     def analyze_vision(self, image_path: str, prompt: str) -> None:
-        self._cancel_event.clear()
         self.status_changed.emit("ACTIVE")
         try:
-            # We don't have cancellation plumbed into standalone VisionManager yet, but we'll try
-            result = asyncio.run(self.vision.analyze(image_path, prompt))
-            if not self._cancel_event.is_set():
+            result = self._request_control.run(
+                self.vision.analyze(image_path, prompt)
+            )
+            if not self._request_control.is_cancelled():
                 self.vision_ready.emit(result.answer)
+        except asyncio.CancelledError:
+            self.log.info("standalone vision request cancelled")
+            self.status_changed.emit("CANCELLED")
+            self.cancelled.emit()
         except Exception as exc:
             self._handle_error(exc, "Desktop vision request")
         finally:
@@ -124,16 +148,25 @@ class JasperWorker(QObject):
             self.finished.emit()
             return
 
-        self._cancel_event.clear()
         self.status_changed.emit("LISTENING")
         try:
-            spoken_text, answer = asyncio.run(self.voice.run_once(self.jasper.respond))
-            if self._cancel_event.is_set():
+            spoken_text, answer = self._request_control.run(
+                self.voice.run_once(
+                    self.jasper.respond,
+                    cancel_callback=self._request_control.is_cancelled,
+                )
+            )
+            if self._request_control.is_cancelled():
+                self.cancelled.emit()
                 return
             if not spoken_text:
                 self.response_ready.emit("voice_empty", "I didn't detect any speech.")
             else:
                 self.response_ready.emit("voice", f"{spoken_text}\n\n{answer}")
+        except asyncio.CancelledError:
+            self.log.info("desktop voice request cancelled")
+            self.status_changed.emit("CANCELLED")
+            self.cancelled.emit()
         except Exception as exc:
             self._handle_error(exc, "Desktop voice request")
         finally:
@@ -147,7 +180,6 @@ class JasperWorker(QObject):
             self.finished.emit()
             return
 
-        self._cancel_event.clear()
         self.status_changed.emit("SPEAKING")
         try:
             self.voice.speak(text)
