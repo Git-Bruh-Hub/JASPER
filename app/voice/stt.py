@@ -10,6 +10,8 @@ from app.voice.base import SpeechToTextProvider
 
 
 _CUDA_DLL_HANDLES: list[object] = []
+_CUDA_CONFIGURED: bool = False
+_CUDA_BIN_DIRS: list[Path] = []
 
 
 def _configure_cuda_runtime() -> list[Path]:
@@ -21,7 +23,12 @@ def _configure_cuda_runtime() -> list[Path]:
     so JASPER configures them for its own process before importing
     faster-whisper. No global Windows PATH changes are made.
     """
+    global _CUDA_CONFIGURED
+    if _CUDA_CONFIGURED:
+        return _CUDA_BIN_DIRS
+
     if os.name != "nt":
+        _CUDA_CONFIGURED = True
         return []
 
     roots: list[Path] = []
@@ -47,6 +54,7 @@ def _configure_cuda_runtime() -> list[Path]:
             bin_dirs.append(directory)
 
     if not bin_dirs:
+        _CUDA_CONFIGURED = True
         return []
 
     add_dll_directory = getattr(os, "add_dll_directory", None)
@@ -68,6 +76,32 @@ def _configure_cuda_runtime() -> list[Path]:
     if new_entries:
         os.environ["PATH"] = os.pathsep.join(new_entries + path_entries)
 
+    # Explicitly preload the exact runtime DLLs required for CTranslate2 inference.
+    # PySide6 restricts standard DLL search paths (via SetDefaultDllDirectories),
+    # which causes bare LoadLibraryA calls in CTranslate2 to ignore both PATH and
+    # os.add_dll_directory. Forcing these DLLs into the process module table
+    # guarantees they are instantly resolvable when CTranslate2 requests them.
+    target_dlls = {"cublas64_12.dll", "cudnn64_9.dll", "cudart64_12.dll"}
+    log = logging.getLogger("jasper.voice.stt")
+    import ctypes
+
+    for directory in bin_dirs:
+        for dll_name in target_dlls:
+            dll_path = directory / dll_name
+            if dll_path.is_file():
+                try:
+                    # Retain the loaded CDLL handle at the module level to ensure
+                    # it stays alive in the process.
+                    handle = ctypes.CDLL(str(dll_path))
+                    _CUDA_DLL_HANDLES.append(handle)
+                    log.debug("Preloaded CUDA runtime DLL: %s", dll_name)
+                except OSError as exc:
+                    log.warning("Failed to preload available CUDA DLL %s: %s", dll_name, exc)
+                except Exception as exc:
+                    log.error("Unexpected error preloading CUDA DLL %s: %s", dll_name, exc)
+
+    _CUDA_BIN_DIRS.extend(bin_dirs)
+    _CUDA_CONFIGURED = True
     return bin_dirs
 
 
