@@ -58,7 +58,7 @@ class VoiceManager:
             audio_path = Path(temp.name)
 
         try:
-            record_until_silence(
+            recorded = record_until_silence(
                 audio_path,
                 max_seconds=self.max_seconds,
                 sample_rate=self.sample_rate,
@@ -68,6 +68,8 @@ class VoiceManager:
                 cancel_callback=cancel_callback,
             )
             if cancel_callback and cancel_callback():
+                return ""
+            if recorded is None:
                 return ""
             text = self.stt.transcribe(audio_path).strip()
             self.log.info("voice input transcribed chars=%s", len(text))
@@ -114,7 +116,14 @@ class VoiceManager:
             answer = await responder(user_text, cancel_callback=cancel_callback)
         if cancel_callback and cancel_callback():
             return user_text, ""
-        self.speak(answer)
+            
+        try:
+            self.speak(answer)
+        except RuntimeError:
+            if cancel_callback and cancel_callback():
+                return user_text, ""
+            raise
+            
         return user_text, answer
 
     async def run_conversation(

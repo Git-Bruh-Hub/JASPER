@@ -191,19 +191,42 @@ class FasterWhisperSTT(SpeechToTextProvider):
     def transcribe(self, audio_path: Path) -> str:
         self._load_model()
         if not audio_path.exists():
-            raise FileNotFoundError(audio_path)
+            return ""
 
         kwargs = {
             "language": self.language,
             "beam_size": self.beam_size,
             "vad_filter": True,
+            "condition_on_previous_text": False,
         }
         if self.initial_prompt:
             kwargs["initial_prompt"] = self.initial_prompt
 
         segments, _info = self._model.transcribe(str(audio_path), **kwargs)
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+
+        NO_SPEECH_THRESHOLD = 0.6
+        LOGPROB_THRESHOLD = -1.0
+
+        accepted_segments = []
+        for segment in segments:
+            if segment.no_speech_prob > NO_SPEECH_THRESHOLD and segment.avg_logprob < LOGPROB_THRESHOLD:
+                self.log.debug(
+                    "Rejected segment: text='%s' no_speech_prob=%.3f avg_logprob=%.3f",
+                    segment.text.strip(), segment.no_speech_prob, segment.avg_logprob
+                )
+                continue
+
+            self.log.debug(
+                "Accepted segment: text='%s' no_speech_prob=%.3f avg_logprob=%.3f",
+                segment.text.strip(), segment.no_speech_prob, segment.avg_logprob
+            )
+            accepted_segments.append(segment)
+
+        text = " ".join(segment.text.strip() for segment in accepted_segments).strip()
         if not text:
             return ""
-        self.log.info("STT transcription completed device=%s chars=%s", self._device, len(text))
+        self.log.info(
+            "STT transcription completed device=%s segments=%d chars=%s",
+            self._device, len(accepted_segments), len(text)
+        )
         return text
