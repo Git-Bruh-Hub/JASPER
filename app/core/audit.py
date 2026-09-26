@@ -36,18 +36,27 @@ _LOG = logging.getLogger("jasper.audit")
 
 class AuditEvent(str, Enum):
     """Enumeration of auditable event types."""
-    PERMISSION_CHECK   = "permission_check"   # PermissionManager.check() called
-    APPROVAL_REQUESTED = "approval_requested"  # ApprovalGate created
-    APPROVAL_GRANTED   = "approval_granted"    # User clicked Continue
-    APPROVAL_DENIED    = "approval_denied"     # User clicked Cancel
-    APPROVAL_EXPIRED   = "approval_expired"    # Gate timed out
-    APPROVAL_CANCELLED = "approval_cancelled"  # Cancelled by AsyncRequestController
-    TOOL_EXECUTION     = "tool_execution"      # Tool handler called
-    TOOL_SUCCESS       = "tool_success"        # Tool returned without error
-    TOOL_FAILED        = "tool_failed"         # Tool raised an exception
-    TOOL_UNKNOWN       = "tool_unknown"        # Outcome indeterminate (invariant 10)
-    SCOPE_DENIED       = "scope_denied"        # Resource outside allowed scope
-    BUDGET_EXCEEDED    = "budget_exceeded"     # Autonomy budget limit hit
+    PERMISSION_CHECK        = "permission_check"        # PermissionManager.check() called
+    APPROVAL_REQUESTED      = "approval_requested"      # ApprovalGate created
+    APPROVAL_GRANTED        = "approval_granted"        # User clicked Continue
+    APPROVAL_DENIED         = "approval_denied"         # User clicked Cancel
+    APPROVAL_EXPIRED        = "approval_expired"        # Gate timed out
+    APPROVAL_CANCELLED      = "approval_cancelled"      # Cancelled by AsyncRequestController
+    TOOL_EXECUTION          = "tool_execution"          # Tool handler called
+    TOOL_SUCCESS            = "tool_success"            # Tool returned without error
+    TOOL_FAILED             = "tool_failed"             # Tool raised an exception
+    TOOL_UNKNOWN            = "tool_unknown"            # Outcome indeterminate (invariant 10)
+    SCOPE_DENIED            = "scope_denied"            # Resource outside allowed scope
+    BUDGET_EXCEEDED         = "budget_exceeded"         # Autonomy budget limit hit
+    # Slice 5: Retry and failure handling
+    TOOL_RETRY              = "tool_retry"              # Retriable op being retried (attempt N)
+    TOOL_RETRY_EXHAUSTED    = "tool_retry_exhausted"    # All retries consumed; op failed
+    VERIFICATION_RECOVERY   = "verification_recovery"   # Bounded recovery after verify fail
+    # NOTE: DISAGREEMENT_HALTED is intentionally absent from Slice 5.
+    # Planner/Executor disagreement detection requires the multi-agent delegation
+    # layer that is introduced in a later v0.7 slice.  DisagreementResolver exists
+    # in app/agents/retry.py as a reusable primitive but is not yet wired into the
+    # Coordinator.  The audit event will be added when integration is live.
 
 
 def record(
@@ -62,6 +71,8 @@ def record(
     status: str = "SUCCESS",
     user_approved: bool | None = None,
     detail: str = "",
+    attempt: int | None = None,
+    task_id: str = "",
 ) -> None:
     """Emit one structured audit record to the ``jasper.audit`` logger.
 
@@ -83,4 +94,8 @@ def record(
         "user_approved": user_approved,
         "detail": detail,
     }
+    if attempt is not None:
+        payload["attempt"] = attempt
+    if task_id:
+        payload["task_id"] = task_id
     _LOG.info(json.dumps(payload, ensure_ascii=False))
