@@ -263,3 +263,95 @@ class AgentResult:
     def verified_passed(self) -> bool:
         """True when a Critic verdict is present and passed."""
         return self.verification is not None and self.verification.passed
+
+
+# ---------------------------------------------------------------------------
+# Slice 6: Planner/Executor typed handoff contracts
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PlannerTask:
+    """Bounded input context passed to the Planner callable.
+
+    Who creates it: MultiAgentCoordinator
+    Who consumes it: PlannerAgent (passed verbatim to planner_callable)
+    Trusted: YES — created by Coordinator from validated user input
+    Grants authority: NEVER
+
+    Attributes
+    ----------
+    user_text:
+        The original user request the Planner should reason about.
+    task_id:
+        Unique identifier for this planning round.  Used for audit
+        correlation across Planner, Executor, and disagreement events.
+    """
+    user_text: str
+    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass(frozen=True)
+class PlannerResult:
+    """Typed handoff from Planner to Executor.
+
+    Who creates it: MultiAgentCoordinator (wraps PlannerAgent output)
+    Who consumes it: MultiAgentCoordinator → validates → passes to ExecutorAgent
+    Trusted: NO — wraps agent output; independently validated before use
+    Grants authority: NEVER
+
+    The Coordinator validates this object before passing it to the
+    Executor callable.  The Executor callable receives only the fields
+    in this dataclass — it has no access to the registry, permission
+    manager, approval gate, or budget.
+
+    Attributes
+    ----------
+    task_id:
+        Matches ``PlannerTask.task_id`` — used for audit correlation.
+    user_text:
+        Original user request.  Executor treats this as read-only context.
+    planner_result:
+        The ``AgentResult`` produced by the Planner invocation.
+    created_at:
+        UTC timestamp of handoff creation.
+    """
+    task_id: str
+    user_text: str
+    planner_result: AgentResult
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    def proposed_tool_names(self) -> frozenset[str]:
+        """Return the set of tool names the Planner proposed."""
+        return frozenset(a.tool_name for a in self.planner_result.proposed_actions)
+
+
+@dataclass(frozen=True)
+class DisagreementFeedback:
+    """Explicit typed feedback passed to the Executor on disagreement retry.
+
+    Who creates it: MultiAgentCoordinator (on disagreement detection)
+    Who consumes it: ExecutorAgent (passed to executor_callable alongside PlannerResult)
+    Trusted: YES — created by Coordinator from validated disagreement detection
+    Grants authority: NEVER — carries no permission-granting fields
+
+    Provides the Executor with explicit context about *why* its previous
+    output was rejected, so it can revise its ``AgentResult`` to stay
+    within the Planner's proposed tool set.
+
+    Attributes
+    ----------
+    round_number:
+        Which disagreement round this is (1-indexed).
+    max_rounds:
+        Total allowed rounds before ``DISAGREEMENT_HALTED``.
+    unexpected_tools:
+        Tools the Executor proposed that the Planner did not include.
+    planner_tools:
+        The full authorised tool set from the Planner.
+    """
+    round_number: int
+    max_rounds: int
+    unexpected_tools: frozenset[str]
+    planner_tools: frozenset[str]

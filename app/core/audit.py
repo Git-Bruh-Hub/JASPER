@@ -52,11 +52,11 @@ class AuditEvent(str, Enum):
     TOOL_RETRY              = "tool_retry"              # Retriable op being retried (attempt N)
     TOOL_RETRY_EXHAUSTED    = "tool_retry_exhausted"    # All retries consumed; op failed
     VERIFICATION_RECOVERY   = "verification_recovery"   # Bounded recovery after verify fail
-    # NOTE: DISAGREEMENT_HALTED is intentionally absent from Slice 5.
-    # Planner/Executor disagreement detection requires the multi-agent delegation
-    # layer that is introduced in a later v0.7 slice.  DisagreementResolver exists
-    # in app/agents/retry.py as a reusable primitive but is not yet wired into the
-    # Coordinator.  The audit event will be added when integration is live.
+    # Slice 6: Agent Logic — Planner/Executor delegation (DisagreementResolver now live)
+    PLANNER_INVOKED         = "planner_invoked"         # Planner agent called
+    EXECUTOR_INVOKED        = "executor_invoked"        # Executor agent called
+    DISAGREEMENT_DETECTED   = "disagreement_detected"   # Executor proposed unexpected tools
+    DISAGREEMENT_HALTED     = "disagreement_halted"     # Resolution limit reached; safe halt
 
 
 def record(
