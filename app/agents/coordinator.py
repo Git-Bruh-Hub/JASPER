@@ -45,6 +45,11 @@ from app.agents.contracts import (
     ProposedAction,
     VerificationResult,
 )
+from app.agents.retry import (
+    RetryPolicy,
+    operation_type_from_risk,
+    OperationType,
+)
 from app.core.approval import ApprovalGate, ApprovalRequest
 from app.core.audit import AuditEvent, record
 from app.core.scoped_permissions import ScopedPermissionManager
@@ -177,12 +182,14 @@ class Coordinator:
         budget: CoordinatorBudget | None = None,
         approval_notifier: ApprovalNotifier | None = None,
         workspace_root: Path | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         self._registry = registry
         self._permissions = permissions
         self._budget = budget or CoordinatorBudget()
         self._approval_notifier = approval_notifier
         self._workspace = (workspace_root or Path.cwd()).resolve()
+        self._retry_policy = retry_policy or RetryPolicy()
         self._state = CoordinatorState.IDLE
         self._verification_failures = 0
         self._max_verification_failures = 3
@@ -271,7 +278,15 @@ class Coordinator:
         self._transition(CoordinatorState.ACTING)
         self._check_cancelled(cancel_callback)
 
-        result: AgentResult = await agent_callable(user_text)
+        # Containment: agent callable must return an AgentResult.
+        # Any other return type or exception is surfaced as a controlled failure.
+        raw_result = await agent_callable(user_text)
+        if not isinstance(raw_result, AgentResult):
+            raise TypeError(
+                f"Agent callable returned {type(raw_result).__name__!r} "
+                f"instead of AgentResult. Agents must return AgentResult only."
+            )
+        result: AgentResult = raw_result
 
         # Phase 2: Execute proposed actions
         tool_outputs: list[dict[str, Any]] = []
@@ -316,6 +331,8 @@ class Coordinator:
         6. Audit the outcome (invariant 14).
         7. Do NOT retry side-effecting actions on failure (invariant 9).
         8. UNKNOWN outcomes are not treated as failures (invariant 10).
+        9. Retry READ/MODEL ops up to RetryPolicy.max_retries (Slice 5).
+        10. Retries consume budget; backoff is cancellation-aware (Slice 5).
         """
         # Step 1: Schema validation (invariant 2)
         self._validate_proposed_action(action)
@@ -345,56 +362,141 @@ class Coordinator:
                     f"(action_id={action.action_id})."
                 )
 
+        # Determine operation type for retry policy decisions.
+        op_type = operation_type_from_risk(action.scope.risk)
+        is_side_effecting = op_type in OperationType.side_effecting()
+
         # Step 5: Execute (only Coordinator touches tools — invariant 1)
-        self._budget.charge_tool_call()
+        # For side-effecting operations: exactly ONE attempt, never retried.
+        # For retriable operations: up to RetryPolicy.max_retries additional attempts.
+        attempt = 0
+        last_exc: Exception | None = None
 
-        record(
-            AuditEvent.TOOL_EXECUTION,
-            actor="coordinator",
-            tool_name=action.tool_name,
-            operation=action.scope.operation,
-            risk=action.scope.risk,
-            resource=action.scope.resource_scope,
-            action_id=action.action_id,
-            status="RUNNING",
-            user_approved=action.scope.approval_requirement != ApprovalRequirement.NEVER,
-        )
+        while True:
+            self._check_cancelled(cancel_callback)
 
-        try:
-            raw = tool.handler(**action.arguments)
-            if asyncio.iscoroutine(raw):
-                raw = await raw
-            result_str = json.dumps(raw, ensure_ascii=False, default=str)
+            # Charge the budget for this execution attempt (includes retries).
+            self._budget.charge_tool_call()
+
             record(
-                AuditEvent.TOOL_SUCCESS,
+                AuditEvent.TOOL_EXECUTION,
                 actor="coordinator",
                 tool_name=action.tool_name,
+                operation=action.scope.operation,
+                risk=action.scope.risk,
+                resource=action.scope.resource_scope,
                 action_id=action.action_id,
-                status="SUCCESS",
+                status="RUNNING",
+                attempt=attempt,
+                user_approved=action.scope.approval_requirement != ApprovalRequirement.NEVER,
             )
-            return {"action_id": action.action_id, "tool": action.tool_name, "result": result_str, "status": "success"}
 
-        except Exception as exc:
-            # Side-effecting actions: NEVER blindly retry (invariant 9).
-            # If outcome is unknown (e.g. network failure mid-write),
-            # surface as UNKNOWN — not as a clean failure (invariant 10).
-            is_side_effecting = action.scope.risk in ("write", "execute", "destructive")
-            status = "UNKNOWN" if is_side_effecting else "FAILED"
-            event = AuditEvent.TOOL_UNKNOWN if is_side_effecting else AuditEvent.TOOL_FAILED
-            record(
-                event,
-                actor="coordinator",
-                tool_name=action.tool_name,
-                action_id=action.action_id,
-                status=status,
-                detail=str(exc),
-            )
-            return {
-                "action_id": action.action_id,
-                "tool": action.tool_name,
-                "error": str(exc),
-                "status": status,
-            }
+            try:
+                raw = tool.handler(**action.arguments)
+                if asyncio.iscoroutine(raw):
+                    raw = await raw
+
+                # Contain malformed results: attempt JSON serialisation with
+                # fallback to str().  This must never raise uncaught.
+                try:
+                    result_str = json.dumps(raw, ensure_ascii=False, default=str)
+                except Exception as ser_exc:
+                    self.log.warning(
+                        "tool result serialisation failed tool=%s exc=%s; using str() fallback",
+                        action.tool_name, ser_exc,
+                    )
+                    result_str = json.dumps({"_raw": str(raw)}, ensure_ascii=False)
+
+                record(
+                    AuditEvent.TOOL_SUCCESS,
+                    actor="coordinator",
+                    tool_name=action.tool_name,
+                    action_id=action.action_id,
+                    status="SUCCESS",
+                    attempt=attempt,
+                )
+                return {
+                    "action_id": action.action_id,
+                    "tool": action.tool_name,
+                    "result": result_str,
+                    "status": "success",
+                }
+
+            except asyncio.CancelledError:
+                # Cancellation during execution must never trigger a retry of
+                # a side-effecting operation (invariant 9, Slice 5 invariant 7).
+                raise
+
+            except Exception as exc:
+                last_exc = exc
+
+                if is_side_effecting:
+                    # Invariant 9: side-effecting actions NEVER blindly retried.
+                    # Invariant 10: UNKNOWN outcome preserved, not converted to FAILED.
+                    event = AuditEvent.TOOL_UNKNOWN
+                    status = "UNKNOWN"
+                    record(
+                        event,
+                        actor="coordinator",
+                        tool_name=action.tool_name,
+                        action_id=action.action_id,
+                        status=status,
+                        detail=str(exc),
+                        attempt=attempt,
+                    )
+                    return {
+                        "action_id": action.action_id,
+                        "tool": action.tool_name,
+                        "error": str(exc),
+                        "status": status,
+                    }
+
+                # Retriable operation failed.  Check policy.
+                if self._retry_policy.should_retry(op_type, attempt=attempt):
+                    backoff = self._retry_policy.backoff_seconds(attempt=attempt, op=op_type)
+                    record(
+                        AuditEvent.TOOL_RETRY,
+                        actor="coordinator",
+                        tool_name=action.tool_name,
+                        action_id=action.action_id,
+                        status="RETRYING",
+                        detail=str(exc),
+                        attempt=attempt,
+                    )
+                    self.log.warning(
+                        "tool failed; will retry tool=%s attempt=%d backoff=%.2fs exc=%s",
+                        action.tool_name, attempt, backoff, exc,
+                    )
+                    if backoff > 0.0:
+                        # Cancellation-aware backoff sleep (Slice 5 invariant 7).
+                        try:
+                            await asyncio.sleep(backoff)
+                        except asyncio.CancelledError:
+                            raise
+                    self._check_cancelled(cancel_callback)
+                    attempt += 1
+                    continue
+
+                # All retries exhausted.  Surface as FAILED (not UNKNOWN for reads).
+                record(
+                    AuditEvent.TOOL_RETRY_EXHAUSTED,
+                    actor="coordinator",
+                    tool_name=action.tool_name,
+                    action_id=action.action_id,
+                    status="FAILED",
+                    detail=str(exc),
+                    attempt=attempt,
+                )
+                self.log.error(
+                    "tool failed after %d attempt(s); retries exhausted tool=%s exc=%s",
+                    attempt + 1, action.tool_name, exc,
+                )
+                return {
+                    "action_id": action.action_id,
+                    "tool": action.tool_name,
+                    "error": str(exc),
+                    "status": "FAILED",
+                }
 
 
     # ------------------------------------------------------------------
