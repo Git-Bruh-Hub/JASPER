@@ -42,6 +42,8 @@ from app.voice.tts import PiperTTS, WindowsSpeechTTS
 from app.vision.manager import VisionManager
 from app.vision.ollama_provider import OllamaVisionProvider
 from app.vision.router import VisionRouter
+from app.agents.multi_agent_coordinator import MultiAgentCoordinator
+from app.core.scoped_permissions import ScopedPermissionManager
 
 
 def build_registry(vision: VisionManager | None = None) -> ToolRegistry:
@@ -211,7 +213,22 @@ async def main():
     setup_logging()
     log = logging.getLogger("jasper")
     vision = build_vision_manager()
-    jasper = Orchestrator(build_registry(vision), PermissionManager(), SQLiteMemory())
+    registry = build_registry(vision)
+    
+    # v0.7 Multi-Agent setup
+    scoped_permissions = ScopedPermissionManager()
+    multi_agent_coordinator = MultiAgentCoordinator(
+        registry=registry,
+        permissions=scoped_permissions,
+    )
+    
+    jasper = Orchestrator(
+        registry, 
+        PermissionManager(), 
+        SQLiteMemory(),
+        vision=vision,
+        multi_agent_coordinator=multi_agent_coordinator
+    )
     voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
     print(f"JASPER {JASPER_VERSION}")
