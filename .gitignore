@@ -10,3 +10,5 @@ data/voice/*
 data/voices/*
 !data/voices/.gitkeep
 .pytest_cache/
+
+graphify-out/cache/

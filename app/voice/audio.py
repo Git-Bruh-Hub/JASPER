@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Callable
 
 
 def record_until_silence(
@@ -12,7 +13,8 @@ def record_until_silence(
     silence_seconds: float = 0.9,
     silence_threshold: float = 0.01,
     min_seconds: float = 0.6,
-) -> Path:
+    cancel_callback: Callable[[], bool] | None = None,
+) -> Path | None:
     """Record microphone input until silence or the maximum duration.
 
     Audio packages are imported lazily so JASPER can still run in text-only
@@ -36,9 +38,10 @@ def record_until_silence(
     frames: list[np.ndarray] = []
     started_at = time.monotonic()
     last_voice_at = started_at
+    voice_detected = False
 
     def callback(indata, _frames, _time_info, status) -> None:
-        nonlocal last_voice_at
+        nonlocal last_voice_at, voice_detected
         if status:
             # Recording can continue through non-fatal device status messages.
             pass
@@ -46,6 +49,7 @@ def record_until_silence(
         frames.append(block)
         rms = float(np.sqrt(np.mean(np.square(block.astype(np.float32)))))
         if rms >= silence_threshold:
+            voice_detected = True
             last_voice_at = time.monotonic()
 
     try:
@@ -59,6 +63,8 @@ def record_until_silence(
             while True:
                 now = time.monotonic()
                 elapsed = now - started_at
+                if cancel_callback and cancel_callback():
+                    break
                 if elapsed >= max_seconds:
                     break
                 if elapsed >= min_seconds and now - last_voice_at >= silence_seconds:
@@ -67,8 +73,13 @@ def record_until_silence(
     except Exception as exc:
         raise RuntimeError(f"Microphone recording failed: {exc}") from exc
 
+    if cancel_callback and cancel_callback():
+        return output
     if not frames:
         raise RuntimeError("No microphone audio was captured.")
+
+    if not voice_detected:
+        return None
 
     audio = np.concatenate(frames, axis=0)
     sf.write(str(output), audio, sample_rate, subtype="PCM_16")

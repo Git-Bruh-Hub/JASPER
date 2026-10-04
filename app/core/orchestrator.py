@@ -14,6 +14,8 @@ from app.tools.vision import validate_image_path
 from app.knowledge.hardware import get_cpu_profile, render_cpu_explanation
 from app.vision.manager import VisionManager
 from app.agents import CognitiveRouter, CognitiveMode, CognitiveEngine
+from app.agents.multi_agent_coordinator import MultiAgentCoordinator
+from app.agents.adapters import PlannerAdapter, ExecutorAdapter
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -268,11 +270,13 @@ class Orchestrator:
         permissions: PermissionManager,
         memory,
         vision: VisionManager | None = None,
+        multi_agent_coordinator: MultiAgentCoordinator | None = None,
     ):
         self.registry = registry
         self.permissions = permissions
         self.memory = memory
         self.vision = vision
+        self.multi_agent_coordinator = multi_agent_coordinator
         self.memory_manager = MemoryManager(memory)
         self.models = ModelRouter()
         self.cognitive_router = CognitiveRouter()
@@ -407,6 +411,27 @@ class Orchestrator:
                 ),
             })
         mode = self.cognitive_router.route(user_text)
+
+        if mode == CognitiveMode.AUTONOMOUS:
+            if not self.multi_agent_coordinator:
+                # Fail safely without falling back to unrestricted path
+                return "Autonomous mode is not enabled."
+            
+            clean_text = re.sub(r'(?i)^/auto\s*', '', user_text).strip()
+            
+            planner_adapter = PlannerAdapter(self.models, self.registry)
+            executor_adapter = ExecutorAdapter(self.models, self.registry)
+            
+            answer = await self.multi_agent_coordinator.run_multi_agent(
+                planner_callable=planner_adapter,
+                executor_callable=executor_adapter,
+                user_text=clean_text,
+                cancel_callback=cancel_callback,
+            )
+            self.memory.add("assistant", answer)
+            await self._emit_local_response(answer, on_chunk)
+            return answer
+
         answer = await self.engine.run(mode, messages, user_text, on_chunk, cancel_callback=cancel_callback)
 
         self.memory.add("assistant", answer)

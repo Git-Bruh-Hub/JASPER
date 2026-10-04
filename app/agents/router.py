@@ -15,6 +15,7 @@ class CognitiveMode(Enum):
     SIMPLE = "SIMPLE"
     COLLABORATIVE = "COLLABORATIVE"
     DEEP = "DEEP"
+    AUTONOMOUS = "AUTONOMOUS"
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,11 @@ class CognitiveRouter:
     def route(self, user_text: str) -> CognitiveMode:
         """Deterministically route the request to a cognitive mode."""
         text = user_text.lower().strip()
+        
+        # --- Slice 7: Autonomous Routing Boundary ---
+        if text == "/auto" or text.startswith("/auto "):
+            return CognitiveMode.AUTONOMOUS
+        
         words = _word_count(text)
 
         score = 0
