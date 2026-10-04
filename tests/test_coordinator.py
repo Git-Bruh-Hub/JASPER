@@ -58,6 +58,7 @@ def _make_registry(*tools: tuple[str, Risk]) -> ToolRegistry:
             description="test",
             risk=risk,
             handler=lambda **_kw: {"ok": True},
+            resource_extractor=lambda args: args.get("path", ""),
         ))
     return reg
 
@@ -274,7 +275,7 @@ async def test_write_tool_failure_produces_unknown_status():
         raise OSError("disk full")
 
     reg = ToolRegistry()
-    reg.register(Tool(name="write_file", description="t", risk=Risk.WRITE, handler=_failing_write))
+    reg.register(Tool(name="write_file", description="t", risk=Risk.WRITE, handler=_failing_write, path_argument="path"))
     pm = _make_permissions(frozenset({Risk.READ, Risk.WRITE}))
     budget = CoordinatorBudget(max_tool_calls=1)
     coord = Coordinator(reg, pm, budget=budget)
@@ -293,6 +294,7 @@ async def test_write_tool_failure_produces_unknown_status():
     # Grant WRITE in permissions but let tool fail
     pm2 = ScopedPermissionManager(workspace_root=WORKSPACE, allowed_risks=frozenset({Risk.READ, Risk.WRITE}))
     coord2 = Coordinator(reg, pm2, budget=CoordinatorBudget())
+    coord2._request_approval = AsyncMock(return_value=True)
 
     async def _agent(user_text: str) -> AgentResult:
         return AgentResult(agent_id="executor", proposed_actions=[write_action])
@@ -308,7 +310,7 @@ async def test_read_tool_failure_produces_failed_status():
         raise FileNotFoundError("not found")
 
     reg = ToolRegistry()
-    reg.register(Tool(name="read_file", description="t", risk=Risk.READ, handler=_failing_read))
+    reg.register(Tool(name="read_file", description="t", risk=Risk.READ, handler=_failing_read, path_argument="path"))
     pm = _make_permissions(frozenset({Risk.READ}))
     coord = Coordinator(reg, pm)
 
@@ -343,8 +345,9 @@ async def test_critic_verification_does_not_grant_permission():
     )
     # Register tool but NOT with WRITE permission in pm
     reg2 = ToolRegistry()
-    reg2.register(Tool(name="write_file", description="t", risk=Risk.WRITE, handler=lambda **_: {}))
+    reg2.register(Tool(name="write_file", description="t", risk=Risk.WRITE, handler=lambda **_: {}, path_argument="path"))
     coord = Coordinator(reg2, pm)
+    coord._request_approval = AsyncMock(return_value=True)
 
     async def _agent(user_text: str) -> AgentResult:
         return AgentResult(
@@ -398,7 +401,7 @@ async def test_external_content_in_agent_result_does_not_escalate():
 async def test_approval_required_action_denied_when_no_notifier():
     """If user denies approval (gate auto-expires with no notifier), action is denied."""
     reg = ToolRegistry()
-    reg.register(Tool(name="write_file", description="t", risk=Risk.WRITE, handler=lambda **_: {}))
+    reg.register(Tool(name="write_file", description="t", risk=Risk.WRITE, handler=lambda **_: {}, path_argument="path"))
     pm = ScopedPermissionManager(workspace_root=WORKSPACE, allowed_risks=frozenset({Risk.READ, Risk.WRITE}))
 
     coord = Coordinator(reg, pm, budget=CoordinatorBudget(timeout_seconds=0.2))
@@ -430,7 +433,7 @@ async def test_approval_required_action_denied_when_no_notifier():
 @pytest.mark.asyncio
 async def test_scope_escalation_in_proposed_action_denied():
     """ProposedAction targeting outside workspace must be denied."""
-    reg = _make_registry(("read_file", Risk.READ))
+    reg = _make_registry(("file.read", Risk.READ))
     pm = _make_permissions(frozenset({Risk.READ}))
     coord = Coordinator(reg, pm)
 
@@ -441,7 +444,7 @@ async def test_scope_escalation_in_proposed_action_denied():
         approval_requirement=ApprovalRequirement.NEVER,
     )
     evil_action = ProposedAction(
-        tool_name="read_file",
+        tool_name="file.read",
         arguments={"path": "C:/Windows/System32/sam"},
         scope=evil_scope,
         rationale="Totally legit",

@@ -42,6 +42,7 @@ from typing import Any, Callable, Coroutine
 from app.agents.contracts import (
     AgentResult,
     ApprovalRequirement,
+    PermissionScope,
     ProposedAction,
     VerificationResult,
 )
@@ -337,11 +338,45 @@ class Coordinator:
         # Step 1: Schema validation (invariant 2)
         self._validate_proposed_action(action)
 
+        # Derive effective authorization context from trusted Tool metadata
+        tool = self._registry.get(action.tool_name)
+        try:
+            actual_resource = tool.extract_resource(action.arguments)
+        except Exception as e:
+            record(
+                AuditEvent.SCOPE_DENIED,
+                actor="coordinator",
+                tool_name=action.tool_name,
+                operation=action.tool_name,
+                risk=tool.risk.value,
+                resource="unknown",
+                action_id=action.action_id,
+                status="DENIED",
+                detail=f"Resource extraction failed: {e}"
+            )
+            raise PermissionError(f"Failed to extract target resource: {e}")
+
+        authoritative_approval = ApprovalRequirement.NEVER if tool.risk.value == "read" else ApprovalRequirement.ALWAYS
+        authoritative_scope = PermissionScope(
+            risk=tool.risk.value,
+            resource_scope=actual_resource,
+            operation=tool.name,
+            approval_requirement=authoritative_approval,
+            lifetime_seconds=None
+        )
+
+        action = ProposedAction(
+            tool_name=action.tool_name,
+            arguments=action.arguments,
+            scope=authoritative_scope,
+            rationale=action.rationale,
+            action_id=action.action_id
+        )
+
         # Step 2: Canonicalise path (invariant 5)
-        action = self._canonicalise_action(action)
+        action = self._canonicalise_action(action, tool)
 
         # Step 3: Check tool risk policy + scope (invariants 3, 4)
-        tool = self._registry.get(action.tool_name)
         self._permissions.check_tool(tool)
         self._permissions.check_scope(action)
 
@@ -564,33 +599,40 @@ class Coordinator:
         if not isinstance(action.arguments, dict):
             raise TypeError(f"ProposedAction arguments must be dict (id={action.action_id}).")
 
-    def _canonicalise_action(self, action: ProposedAction) -> ProposedAction:
+    def _canonicalise_action(self, action: ProposedAction, tool: Tool) -> ProposedAction:
         """Return a new ProposedAction with the resource_scope canonicalised (invariant 5).
 
-        Only applies to filesystem operations.  Other scopes are left as-is.
+        Only applies to operations on filesystem tools (those with path_argument).
         """
         scope = action.scope
-        if not scope.operation.startswith("file."):
+        if not tool.path_argument or tool.path_argument not in action.arguments:
             return action
+
+        raw_path = str(action.arguments[tool.path_argument])
+
         try:
-            canonical = str(Path(scope.resource_scope).resolve())
+            # We strictly enforce the same semantics handlers use to avoid TOCTOU mismatches
+            canonical = str(Path(raw_path).expanduser().resolve())
         except Exception:
             return action  # permission check will catch it
 
-        if canonical == scope.resource_scope:
-            return action
+        # Crucial security fix: overwrite the argument so the handler CANNOT
+        # interpret the path differently than we just authorized.
+        new_args = dict(action.arguments)
+        new_args[tool.path_argument] = canonical
 
         from app.agents.contracts import PermissionScope
         new_scope = PermissionScope(
             risk=scope.risk,
             resource_scope=canonical,
-            operation=scope.operation,
+            # Ensure the operation is prefixed with "file." so ScopedPermissionManager checks it
+            operation=f"file.{scope.operation}" if not scope.operation.startswith("file.") else scope.operation,
             approval_requirement=scope.approval_requirement,
             lifetime_seconds=scope.lifetime_seconds,
         )
         return ProposedAction(
             tool_name=action.tool_name,
-            arguments=action.arguments,
+            arguments=new_args,
             scope=new_scope,
             rationale=action.rationale,
             action_id=action.action_id,

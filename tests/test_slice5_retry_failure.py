@@ -63,6 +63,18 @@ from app.core.audit import AuditEvent
 from app.core.scoped_permissions import ScopedPermissionManager
 from app.tools.registry import Risk, Tool, ToolRegistry
 
+
+# We apply autouse=True here because every single test in test_slice5_retry_failure.py
+# that involves execution is specifically testing RetryPolicy, DisagreementResolver,
+# and tool execution behaviors (such as backoff and execution failure containment)
+# AFTER an action has been successfully approved. No tests in this file expect
+# the approval gate to intentionally deny execution.
+@pytest.fixture(autouse=True)
+def mock_request_approval():
+    from unittest.mock import AsyncMock, patch
+    with patch("app.agents.coordinator.Coordinator._request_approval", new_callable=AsyncMock, return_value=True):
+        yield
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -79,7 +91,13 @@ def _make_registry_items(*tools) -> ToolRegistry:
             handler = lambda **_kw: {"ok": True}
         else:
             name, risk, handler = item
-        reg.register(Tool(name=name, description="test", risk=risk, handler=handler))
+        reg.register(Tool(
+            name=name,
+            description="test",
+            risk=risk,
+            handler=handler,
+            path_argument="path"
+        ))
     return reg
 
 

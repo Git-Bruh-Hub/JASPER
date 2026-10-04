@@ -43,10 +43,23 @@ from app.tools.registry import Risk, Tool, ToolRegistry
 WORKSPACE = Path("C:/workspace").resolve()
 
 
+@pytest.fixture
+def mock_request_approval():
+    from unittest.mock import AsyncMock, patch
+    with patch("app.agents.coordinator.Coordinator._request_approval", new_callable=AsyncMock, return_value=True):
+        yield
+
+
 def _make_registry(*tools):
     reg = ToolRegistry()
     for name, risk in tools:
-        reg.register(Tool(name=name, description="test", risk=risk, handler=lambda **_: {"ok": True}))
+        reg.register(Tool(
+            name=name,
+            description="test",
+            risk=risk,
+            handler=lambda **_: {"ok": True},
+            path_argument="path"
+        ))
     return reg
 
 
@@ -167,10 +180,10 @@ class TestExecutorAgent:
 
     @pytest.mark.asyncio
     async def test_executor_cannot_bypass_authorization(self):
-        coord = _make_coordinator()
+        coord = _make_coordinator(registry=_make_registry(("file.read", Risk.READ)))
         evil_scope = PermissionScope(risk="read", resource_scope="C:/Windows/System32/sam",
                                      operation="file.read", approval_requirement=ApprovalRequirement.NEVER)
-        evil_action = ProposedAction(tool_name="read_tool", arguments={"path": "C:/Windows/System32/sam"},
+        evil_action = ProposedAction(tool_name="file.read", arguments={"path": "C:/Windows/System32/sam"},
                                      scope=evil_scope, rationale="executor says fine")
         async def planner_callable(t): return AgentResult(agent_id="planner", proposed_actions=[evil_action])
         async def executor_callable(h, f): return AgentResult(agent_id="executor", proposed_actions=[evil_action])
@@ -300,7 +313,7 @@ class TestDisagreement:
             handler_calls += 1
             return {"ok": True}
         reg = ToolRegistry()
-        reg.register(Tool(name="read_tool", description="t", risk=Risk.READ, handler=counting_handler))
+        reg.register(Tool(name="read_tool", description="t", risk=Risk.READ, handler=counting_handler, path_argument="path"))
         coord = MultiAgentCoordinator(registry=reg, permissions=_make_permissions(frozenset({Risk.READ})), budget=CoordinatorBudget(max_agent_rounds=20))
         async def planner_callable(t): return AgentResult(agent_id="planner", proposed_actions=[_read_action("read_tool")])
         async def executor_callable(h, f):
@@ -433,7 +446,7 @@ class TestSecurityInvariants:
         pm = TrackingPermissions(workspace_root=WORKSPACE, allowed_risks=frozenset({Risk.READ}))
         coord = MultiAgentCoordinator(registry=reg, permissions=pm)
         scope = PermissionScope(risk="write", resource_scope=str(WORKSPACE / "x.txt"), operation="file.write", approval_requirement=ApprovalRequirement.NEVER)
-        action = ProposedAction(tool_name="write_tool", arguments={}, scope=scope, rationale="test")
+        action = ProposedAction(tool_name="write_tool", arguments={"path": str(WORKSPACE / "x.txt")}, scope=scope, rationale="test")
         async def planner_callable(t): return AgentResult(agent_id="planner", proposed_actions=[action])
         async def executor_callable(h, f): return AgentResult(agent_id="executor", proposed_actions=[action])
         with pytest.raises(PermissionError):
@@ -525,7 +538,7 @@ class TestRegression:
     @pytest.mark.asyncio
     async def test_all_slice1_to_5_invariants_still_hold(self):
         from app.agents.coordinator import Coordinator
-        reg = _make_registry(("read_tool", Risk.READ))
+        reg = _make_registry(("file.read", Risk.READ))
         pm = _make_permissions(frozenset({Risk.READ}))
         coord = Coordinator(reg, pm)
         bad_action = object.__new__(ProposedAction)
@@ -539,7 +552,7 @@ class TestRegression:
             await coord.run(bad_agent, "test")
         coord2 = Coordinator(reg, pm)
         evil_scope = PermissionScope(risk="read", resource_scope="C:/Windows/System32/sam", operation="file.read", approval_requirement=ApprovalRequirement.NEVER)
-        evil_action = ProposedAction(tool_name="read_tool", arguments={}, scope=evil_scope, rationale="evil")
+        evil_action = ProposedAction(tool_name="file.read", arguments={"path": "C:/Windows/System32/sam"}, scope=evil_scope, rationale="evil")
         async def evil_agent(t): return AgentResult(agent_id="attacker", proposed_actions=[evil_action])
         with pytest.raises(PermissionError, match="outside the allowed workspace"):
             await coord2.run(evil_agent, "test")

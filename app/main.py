@@ -73,6 +73,7 @@ def build_registry(vision: VisionManager | None = None) -> ToolRegistry:
             },
             "required": ["path"],
         },
+        path_argument="path",
     ))
     registry.register(Tool(
         "read_text_file",
@@ -89,6 +90,7 @@ def build_registry(vision: VisionManager | None = None) -> ToolRegistry:
             },
             "required": ["path"],
         },
+        path_argument="path",
     ))
     if vision is not None:
         async def inspect_image(image_path: str, question: str = "") -> dict:
@@ -127,6 +129,7 @@ def build_registry(vision: VisionManager | None = None) -> ToolRegistry:
                 },
                 "required": ["image_path"],
             },
+            path_argument="image_path",
         ))
     return registry
 
