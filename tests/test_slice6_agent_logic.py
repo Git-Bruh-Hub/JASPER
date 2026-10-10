@@ -57,8 +57,9 @@ def _make_registry(*tools):
             name=name,
             description="test",
             risk=risk,
-            handler=lambda **_: {"ok": True},
-            path_argument="path"
+            handler=lambda path: {"ok": True},
+            path_argument="path",
+            requires_filesystem=name.startswith("file.")
         ))
     return reg
 
@@ -182,7 +183,7 @@ class TestExecutorAgent:
     async def test_executor_cannot_bypass_authorization(self):
         coord = _make_coordinator(registry=_make_registry(("file.read", Risk.READ)))
         evil_scope = PermissionScope(risk="read", resource_scope="C:/Windows/System32/sam",
-                                     operation="file.read", approval_requirement=ApprovalRequirement.NEVER)
+                                     operation="file.read", approval_requirement=ApprovalRequirement.NEVER, requires_filesystem=True)
         evil_action = ProposedAction(tool_name="file.read", arguments={"path": "C:/Windows/System32/sam"},
                                      scope=evil_scope, rationale="executor says fine")
         async def planner_callable(t): return AgentResult(agent_id="planner", proposed_actions=[evil_action])
@@ -551,7 +552,7 @@ class TestRegression:
         with pytest.raises(ValueError):
             await coord.run(bad_agent, "test")
         coord2 = Coordinator(reg, pm)
-        evil_scope = PermissionScope(risk="read", resource_scope="C:/Windows/System32/sam", operation="file.read", approval_requirement=ApprovalRequirement.NEVER)
+        evil_scope = PermissionScope(risk="read", resource_scope="C:/Windows/System32/sam", operation="file.read", approval_requirement=ApprovalRequirement.NEVER, requires_filesystem=True)
         evil_action = ProposedAction(tool_name="file.read", arguments={"path": "C:/Windows/System32/sam"}, scope=evil_scope, rationale="evil")
         async def evil_agent(t): return AgentResult(agent_id="attacker", proposed_actions=[evil_action])
         with pytest.raises(PermissionError, match="outside the allowed workspace"):

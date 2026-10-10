@@ -169,6 +169,52 @@ async def test_double_resolve_is_idempotent():
     assert result.granted  # first resolve wins
 
 
+@pytest.mark.asyncio
+async def test_concurrent_resolves_from_multiple_threads():
+    """Resolving concurrently from multiple OS threads must not raise InvalidStateError."""
+    import threading
+    gate = ApprovalGate(_make_action())
+    gate.make_request()
+
+    # Let the gate create its future by starting to wait.
+    wait_task = asyncio.create_task(gate.wait())
+
+    # Ensure the future is created inside wait() by yielding
+    await asyncio.sleep(0)
+
+    num_threads = 5
+    barrier = threading.Barrier(num_threads)
+    worker_errors = []
+
+    def worker():
+        try:
+            barrier.wait(timeout=5.0)
+            gate.resolve(granted=True)
+        except Exception as e:
+            worker_errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(num_threads)]
+    cleanup_errors = []
+    try:
+        for t in threads:
+            t.start()
+    finally:
+        # Block the event loop deterministically by joining the threads synchronously.
+        # Because we do not 'await' here, the event loop cannot process any call_soon_threadsafe
+        # callbacks until after all threads have fully executed gate.resolve() and exited.
+        for t in threads:
+            if t.is_alive():
+                t.join(timeout=5.0)
+            if t.is_alive():
+                cleanup_errors.append(f"Worker thread {t.name} timed out and is still alive")
+
+    if worker_errors or cleanup_errors:
+        raise RuntimeError(f"Thread issues encountered.\nWorker errors: {worker_errors}\nCleanup errors: {cleanup_errors}")
+
+    result = await wait_task
+    assert result.granted
+
+
 # ---------------------------------------------------------------------------
 # Audit events emitted (invariant 14)
 # ---------------------------------------------------------------------------

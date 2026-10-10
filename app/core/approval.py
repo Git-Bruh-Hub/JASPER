@@ -218,6 +218,8 @@ class ApprovalGate:
         if self._loop is None or self._future is None:
             _LOG.warning("resolve() called before gate was awaited gate_id=%s", self.gate_id)
             return
-        if self._future.done():
-            return
-        self._loop.call_soon_threadsafe(self._future.set_result, granted)
+        def _do_resolve():
+            if not self._future.done():
+                self._future.set_result(granted)
+
+        self._loop.call_soon_threadsafe(_do_resolve)

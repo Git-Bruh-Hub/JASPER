@@ -69,6 +69,8 @@ class PermissionScope:
     operation: str
     approval_requirement: ApprovalRequirement
     lifetime_seconds: int | None = None
+    requires_filesystem: bool = False
+
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +330,14 @@ class PlannerResult:
 
 
 @dataclass(frozen=True)
+class ExcessAction:
+    """Represents an action proposed by the Executor that exceeds the Planner's bounds."""
+    tool_name: str
+    arguments: Any
+    excess_count: int
+
+
+@dataclass(frozen=True)
 class DisagreementFeedback:
     """Explicit typed feedback passed to the Executor on disagreement retry.
 
@@ -346,12 +356,12 @@ class DisagreementFeedback:
         Which disagreement round this is (1-indexed).
     max_rounds:
         Total allowed rounds before ``DISAGREEMENT_HALTED``.
-    unexpected_tools:
-        Tools the Executor proposed that the Planner did not include.
-    planner_tools:
-        The full authorised tool set from the Planner.
+    excess_actions:
+        Structured data detailing which actions were unexpected or duplicated.
+    planner_actions:
+        The full authorised action set from the Planner.
     """
     round_number: int
     max_rounds: int
-    unexpected_tools: frozenset[str]
-    planner_tools: frozenset[str]
+    excess_actions: tuple[ExcessAction, ...]
+    planner_actions: tuple[ProposedAction, ...]

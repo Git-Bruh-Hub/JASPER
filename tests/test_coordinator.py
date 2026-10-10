@@ -53,11 +53,19 @@ WORKSPACE = Path("C:/workspace").resolve()
 def _make_registry(*tools: tuple[str, Risk]) -> ToolRegistry:
     reg = ToolRegistry()
     for name, risk in tools:
+        is_fs = name.startswith("file.")
+        def _make_handler(fs):
+            if fs:
+                return lambda path: {"ok": True}
+            return lambda **_kw: {"ok": True}
+
         reg.register(Tool(
             name=name,
             description="test",
             risk=risk,
-            handler=lambda **_kw: {"ok": True},
+            handler=_make_handler(is_fs),
+            path_argument="path" if is_fs else None,
+            requires_filesystem=is_fs,
             resource_extractor=lambda args: args.get("path", ""),
         ))
     return reg
@@ -442,6 +450,7 @@ async def test_scope_escalation_in_proposed_action_denied():
         resource_scope="C:/Windows/System32/sam",
         operation="file.read",
         approval_requirement=ApprovalRequirement.NEVER,
+        requires_filesystem=True,
     )
     evil_action = ProposedAction(
         tool_name="file.read",

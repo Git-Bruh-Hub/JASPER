@@ -47,6 +47,7 @@ def test_registry():
         risk=Risk.READ,
         handler=lambda path: "read data",
         path_argument="path",
+        requires_filesystem=True,
     ))
     return registry
 
@@ -185,7 +186,7 @@ async def test_forged_risk_and_operation_fixed(coordinator, tmp_path, track_hand
 
     assert scope_checked is not None
     assert scope_checked.risk == "write"
-    assert scope_checked.operation == "file.dangerous_write"
+    assert scope_checked.operation == "dangerous_write"
     assert scope_checked.approval_requirement == ApprovalRequirement.ALWAYS
     assert scope_checked.lifetime_seconds is None
 
@@ -319,3 +320,140 @@ async def test_legacy_resource_extractor_succeeds(coordinator, tmp_path, track_h
     assert result["status"] == "success"
     assert result["result"] == '"legacy data"'
     assert "legacy_extractor_tool" in track_handlers
+
+# ---------------------------------------------------------------------------
+# Slice 7 Final Security Boundary (Production tool definitions)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def prod_coordinator(tmp_path):
+    from app.main import build_registry
+    reg = build_registry()
+    pm = ScopedPermissionManager(
+        workspace_root=tmp_path,
+        allowed_risks={Risk.READ, Risk.WRITE},
+    )
+    return Coordinator(registry=reg, permissions=pm, workspace_root=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_real_read_text_file_denies_outside_workspace(prod_coordinator):
+    """Invariant A: read_text_file requires_filesystem=True is strictly bound."""
+    scope = PermissionScope(
+        risk="read",
+        resource_scope="C:/Windows/System32/sam",
+        operation="read_text_file",
+        approval_requirement=ApprovalRequirement.NEVER,
+    )
+    action = ProposedAction(
+        tool_name="read_text_file",
+        arguments={"path": "C:/Windows/System32/sam"},
+        scope=scope,
+        rationale="test",
+        action_id="123"
+    )
+    with pytest.raises(PermissionError, match="outside the allowed workspace"):
+        await prod_coordinator._execute_action(action, cancel_callback=None)
+
+@pytest.mark.asyncio
+async def test_real_filesystem_tool_forged_scope_bypassed(prod_coordinator):
+    """Invariant B: Forging a safe resource_scope does not bypass actual path containment."""
+    scope = PermissionScope(
+        risk="read",
+        resource_scope=str(prod_coordinator._permissions._workspace / "safe.txt"),
+        operation="read_text_file",
+        approval_requirement=ApprovalRequirement.NEVER,
+    )
+    action = ProposedAction(
+        tool_name="read_text_file",
+        arguments={"path": "C:/Windows/System32/sam"},
+        scope=scope,
+        rationale="test",
+        action_id="123"
+    )
+    with pytest.raises(PermissionError, match="outside the allowed workspace"):
+        await prod_coordinator._execute_action(action, cancel_callback=None)
+
+@pytest.mark.asyncio
+async def test_real_non_filesystem_tool_allowed_global_scope(prod_coordinator):
+    """Invariant C: Non-filesystem tools (like browser) are not subjected to workspace containment."""
+    scope = PermissionScope(
+        risk="read",
+        resource_scope="global",
+        operation="read_url_content",
+        approval_requirement=ApprovalRequirement.NEVER,
+    )
+    action = ProposedAction(
+        tool_name="read_url_content",
+        arguments={"url": "https://example.com"},
+        scope=scope,
+        rationale="test",
+        action_id="123"
+    )
+
+    # Must not raise PermissionError about workspace
+    try:
+        await prod_coordinator._execute_action(action, cancel_callback=None)
+    except PermissionError as e:
+        if "workspace" in str(e).lower():
+            pytest.fail(f"Non-filesystem tool was incorrectly subjected to workspace check: {e}")
+    except Exception:
+        pass # Other errors (missing API key etc) are fine
+
+
+@pytest.mark.asyncio
+async def test_filesystem_tool_without_path_argument_fails_closed(coordinator, tmp_path):
+    """Invariant D: requires_filesystem=True missing path_argument fails closed."""
+    # Register directly with private registry since we are in a test for coordinator internals
+    coordinator._registry.register(Tool(
+        name="bad_fs_tool",
+        description="Missing path_argument",
+        risk=Risk.READ,
+        handler=lambda **kw: None,
+        requires_filesystem=True
+    ))
+    scope = PermissionScope(
+        risk="read",
+        resource_scope=str(tmp_path / "test.txt"),
+        operation="bad_fs_tool",
+        approval_requirement=ApprovalRequirement.NEVER,
+    )
+    action = ProposedAction(
+        tool_name="bad_fs_tool",
+        arguments={"some_arg": "value"},
+        scope=scope,
+        rationale="test",
+        action_id="123"
+    )
+    with pytest.raises(PermissionError, match="Missing required resource argument for filesystem tool"):
+        await coordinator._execute_action(action, cancel_callback=None)
+
+@pytest.mark.asyncio
+async def test_resource_extractor_exception_denies_execution(coordinator, tmp_path):
+    """Invariant E: resource_extractor exceptions propagate and fail closed."""
+    def evil_extractor(args):
+        raise ValueError("Malicious extraction error")
+
+    coordinator._registry.register(Tool(
+        name="throwing_tool",
+        description="Throws in extractor",
+        risk=Risk.READ,
+        handler=lambda **kw: None,
+        resource_extractor=evil_extractor
+    ))
+
+    scope = PermissionScope(
+        risk="read",
+        resource_scope=str(tmp_path / "test.txt"),
+        operation="throwing_tool",
+        approval_requirement=ApprovalRequirement.NEVER,
+    )
+    action = ProposedAction(
+        tool_name="throwing_tool",
+        arguments={"some_arg": "value"},
+        scope=scope,
+        rationale="test",
+        action_id="123"
+    )
+    with pytest.raises(PermissionError, match="Malicious extraction error"):
+        await coordinator._execute_action(action, cancel_callback=None)

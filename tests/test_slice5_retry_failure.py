@@ -428,6 +428,78 @@ class TestDisagreementResolver:
         resolver.record_round()
         assert resolver.is_limit_reached() is False
 
+    def test_resolver_detects_changed_security_fields(self):
+        resolver = DisagreementResolver(max_rounds=3)
+        act1 = ProposedAction(
+            tool_name="tool",
+            arguments={"path": "test"},
+            scope=PermissionScope(risk="read", resource_scope="C:/", operation="file", approval_requirement=ApprovalRequirement.NEVER, requires_filesystem=False),
+            rationale="test"
+        )
+        act2 = ProposedAction(
+            tool_name="tool",
+            arguments={"path": "test"},
+            scope=PermissionScope(risk="read", resource_scope="C:/", operation="file", approval_requirement=ApprovalRequirement.NEVER, requires_filesystem=True),
+            rationale="test"
+        )
+        assert resolver.is_disagreement([act1], [act2]) is True
+
+    def test_resolver_detects_duplicate_actions(self):
+        resolver = DisagreementResolver(max_rounds=3)
+        act = ProposedAction("tool", {}, PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test")
+        assert resolver.is_disagreement([act], [act, act]) is True
+
+    def test_resolver_handles_uncanonicalizable_arguments_safely(self):
+        resolver = DisagreementResolver(max_rounds=3)
+
+        class UnserializableA:
+            def __repr__(self): return "Unserializable"
+
+        class UnserializableB:
+            def __repr__(self): return "Unserializable"
+
+        act1 = ProposedAction("tool", {"obj": UnserializableA()}, PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test")
+        act2 = ProposedAction("tool", {"obj": UnserializableB()}, PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test")
+
+        # Their __repr__ are identical, but they can't be JSON serialized.
+        # As an executor action, they should fail closed and explicitly report disagreement without falling back to __repr__.
+        assert resolver.is_disagreement([], [act2]) is True
+
+        # Therefore, an uncanonicalizable executor action disagrees even with an empty planner.
+        # Note: we test against an empty planner because a bad planner action would now raise an exception.
+        assert resolver.is_disagreement([], [act1]) is True
+
+        excess = resolver.get_excess_actions([], [act2])
+        assert len(excess) == 1
+        assert excess[0].tool_name == "tool"
+
+    def test_resolver_rejects_uncanonicalizable_planner_action_explicitly(self):
+        resolver = DisagreementResolver(max_rounds=3)
+
+        class Unserializable:
+            pass
+
+        bad_planner_act = ProposedAction("tool", {"obj": Unserializable()}, PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test")
+        valid_exec_act = ProposedAction("tool", {}, PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test")
+
+        import pytest
+        with pytest.raises(ValueError, match="Planner proposed an uncanonicalizable action"):
+            resolver.is_disagreement([bad_planner_act], [valid_exec_act])
+
+        with pytest.raises(ValueError, match="Planner proposed an uncanonicalizable action"):
+            resolver.get_excess_actions([bad_planner_act], [valid_exec_act])
+
+    def test_resolver_ignores_dict_key_order(self):
+        resolver = DisagreementResolver(max_rounds=3)
+        act1 = ProposedAction(
+            "tool", {"a": 1, "b": 2},
+            PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test"
+        )
+        act2 = ProposedAction(
+            "tool", {"b": 2, "a": 1},
+            PermissionScope("read", "C:/", "file", ApprovalRequirement.NEVER), rationale="test"
+        )
+        assert resolver.is_disagreement([act1], [act2]) is False
 
 # ===========================================================================
 # 9. Verification failure has bounded recovery

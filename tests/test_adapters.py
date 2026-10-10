@@ -65,10 +65,10 @@ class TestAdapterSecurity:
         ]
 
         actions = _parse_llm_actions(malicious_tool_calls, registry)
-        
+
         assert len(actions) == 1
         action = actions[0]
-        
+
         # Verify the application strictly derived the truth from the registry
         assert action.tool_name == "write_file"
         assert action.scope.risk == Risk.WRITE.value
@@ -143,9 +143,9 @@ class TestAdapterSecurity:
 
         adapter = PlannerAdapter(mock_models, registry)
         task = PlannerTask(user_text="read test.txt")
-        
+
         result = await adapter(task)
-        
+
         assert result.agent_id == "planner"
         assert result.observations == ["I will read the file."]
         assert len(result.proposed_actions) == 1
@@ -161,24 +161,41 @@ class TestAdapterSecurity:
         mock_models.provider_for.return_value = (mock_provider, "test-model")
 
         adapter = ExecutorAdapter(mock_models, registry)
-        
-        from app.agents.contracts import PlannerResult, AgentResult, DisagreementFeedback
-        
+
+        from app.agents.contracts import PlannerResult, AgentResult, DisagreementFeedback, ExcessAction, ProposedAction, PermissionScope, ApprovalRequirement
+
         plan_result = PlannerResult(
             task_id="t1",
             user_text="do it",
             planner_result=AgentResult("planner", observations=["plan"])
         )
+
+        planner_act = ProposedAction(
+            tool_name="read_file",
+            arguments={"path": "x"},
+            scope=PermissionScope(
+                risk="read",
+                resource_scope="C:/workspace",
+                operation="file.read",
+                approval_requirement=ApprovalRequirement.NEVER,
+                requires_filesystem=True
+            ),
+            rationale="test"
+        )
+
         feedback = DisagreementFeedback(
-            round_number=1, max_rounds=3, unexpected_tools=frozenset(["write_file"]), planner_tools=frozenset(["read_file"])
+            round_number=1,
+            max_rounds=3,
+            excess_actions=(ExcessAction("write_file", {"path": "y"}, 2),),
+            planner_actions=(planner_act,)
         )
 
         result = await adapter(plan_result, disagreement=feedback)
-        
+
         assert result.agent_id == "executor"
-        
+
         # Verify the disagreement feedback was injected into the prompt
         call_kwargs = mock_provider.chat.call_args.kwargs
         messages = call_kwargs["messages"]
         system_msg = messages[0]["content"]
-        assert "WARNING: In your previous attempt, you used tools (write_file)" in system_msg
+        assert "WARNING: In your previous attempt, you proposed actions (write_file (excess: 2))" in system_msg

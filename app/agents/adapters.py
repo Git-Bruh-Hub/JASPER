@@ -147,10 +147,15 @@ class ExecutorAdapter:
         )
 
         if disagreement:
+            excess_details = [
+                f"{a.tool_name} (excess: {a.excess_count})"
+                for a in disagreement.excess_actions
+            ]
+            planner_details = [a.tool_name for a in disagreement.planner_actions]
             system_prompt += (
-                f"\n\nWARNING: In your previous attempt, you used tools "
-                f"({', '.join(disagreement.unexpected_tools)}) that were NOT authorized by the Planner.\n"
-                f"You MUST restrict your tools to: {', '.join(disagreement.planner_tools)}."
+                f"\n\nWARNING: In your previous attempt, you proposed actions "
+                f"({', '.join(excess_details)}) that exceeded the Planner's bounds.\n"
+                f"You MUST restrict your actions to: {', '.join(planner_details)}."
             )
 
         messages = [

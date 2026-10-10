@@ -22,6 +22,8 @@ class Tool:
     })
     resource_extractor: Callable[[dict[str, Any]], str] | None = None
     path_argument: str | None = None
+    requires_filesystem: bool = False
+
 
     def extract_resource(self, arguments: dict[str, Any]) -> str:
         if self.path_argument:

@@ -45,12 +45,14 @@ def _make_action(
     risk: str = "read",
     operation: str = "file.read",
     approval: ApprovalRequirement = ApprovalRequirement.NEVER,
+    requires_filesystem: bool = True,
 ) -> ProposedAction:
     scope = PermissionScope(
         risk=risk,
         resource_scope=resource_scope,
         operation=operation,
         approval_requirement=approval,
+        requires_filesystem=requires_filesystem,
     )
     return ProposedAction(
         tool_name=tool_name,

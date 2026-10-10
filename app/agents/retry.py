@@ -241,10 +241,80 @@ class DisagreementResolver:
         executor_actions:
             Actions proposed by the Executor agent.
         """
-        planner_names = {a.tool_name for a in planner_actions}
-        executor_names = {a.tool_name for a in executor_actions}
-        # Disagreement = Executor wants something not in the Planner's set
-        return bool(executor_names - planner_names)
+        # Disagreement occurs if there is at least one excess action
+        return bool(self.get_excess_actions(planner_actions, executor_actions))
+
+    def _action_fingerprint(self, action: ProposedAction) -> str:
+        """Create a deterministic fingerprint of an action's intent."""
+        import json
+        import hashlib
+        try:
+            args_str = json.dumps(action.arguments, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            # Reject unsupported or noncanonicalizable values explicitly.
+            raise ValueError(f"Uncanonicalizable arguments: {exc}") from exc
+
+        scope = action.scope
+        # Include all security-relevant fields from the scope
+        scope_str = (
+            f"risk:{scope.risk}|"
+            f"resource:{scope.resource_scope}|"
+            f"op:{scope.operation}|"
+            f"approval:{scope.approval_requirement.value}|"
+            f"lifetime:{scope.lifetime_seconds}|"
+            f"fs:{scope.requires_filesystem}"
+        )
+
+        fingerprint = f"{action.tool_name}::{args_str}::{scope_str}"
+        return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+    def get_excess_actions(
+        self,
+        planner_actions: Sequence[ProposedAction],
+        executor_actions: Sequence[ProposedAction],
+    ) -> tuple["ExcessAction", ...]:
+        """Compute actions proposed by Executor that exceed Planner bounds."""
+        from collections import Counter
+        from app.agents.contracts import ExcessAction
+
+        planner_counts = Counter()
+        for a in planner_actions:
+            try:
+                fp = self._action_fingerprint(a)
+                planner_counts[fp] += 1
+            except ValueError as exc:
+                # If a planner action cannot be canonicalized, surface that validation failure explicitly.
+                # It cannot be safely ignored, as it indicates a malformed intent plan.
+                raise ValueError(f"Planner proposed an uncanonicalizable action: {exc}") from exc
+
+        excess = {}
+        uncanonicalizable_excess = []
+
+        for action in executor_actions:
+            try:
+                fp = self._action_fingerprint(action)
+                if planner_counts.get(fp, 0) > 0:
+                    planner_counts[fp] -= 1
+                else:
+                    if fp not in excess:
+                        excess[fp] = ExcessAction(
+                            tool_name=action.tool_name,
+                            arguments=action.arguments,
+                            excess_count=1
+                        )
+                    else:
+                        excess[fp].excess_count += 1
+            except ValueError:
+                # Explicitly report disagreement without pretending to have a valid fingerprint.
+                uncanonicalizable_excess.append(
+                    ExcessAction(
+                        tool_name=action.tool_name,
+                        arguments=action.arguments,
+                        excess_count=1
+                    )
+                )
+
+        return tuple(excess.values()) + tuple(uncanonicalizable_excess)
 
     def record_round(self) -> None:
         """Increment the disagreement round counter."""

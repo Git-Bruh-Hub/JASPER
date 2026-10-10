@@ -150,7 +150,7 @@ class ScopedPermissionManager:
     def _evaluate_scope(self, scope: PermissionScope) -> str:
         """Return a non-empty denial reason string, or empty string if OK."""
         # Filesystem scope check
-        if scope.risk in ("write", "execute", "destructive") or scope.operation.startswith("file."):
+        if scope.requires_filesystem:
             return self._check_filesystem_scope(scope.resource_scope)
         # Network operations: deny by default
         if scope.risk == "network":

@@ -362,7 +362,8 @@ class Coordinator:
             resource_scope=actual_resource,
             operation=tool.name,
             approval_requirement=authoritative_approval,
-            lifetime_seconds=None
+            lifetime_seconds=None,
+            requires_filesystem=tool.requires_filesystem
         )
 
         action = ProposedAction(
@@ -602,19 +603,22 @@ class Coordinator:
     def _canonicalise_action(self, action: ProposedAction, tool: Tool) -> ProposedAction:
         """Return a new ProposedAction with the resource_scope canonicalised (invariant 5).
 
-        Only applies to operations on filesystem tools (those with path_argument).
+        Only applies to operations on filesystem tools (those with requires_filesystem=True).
         """
         scope = action.scope
-        if not tool.path_argument or tool.path_argument not in action.arguments:
+        if not tool.requires_filesystem:
             return action
+
+        if not tool.path_argument or tool.path_argument not in action.arguments:
+            raise PermissionError(f"Missing required resource argument for filesystem tool: {tool.name}")
 
         raw_path = str(action.arguments[tool.path_argument])
 
         try:
             # We strictly enforce the same semantics handlers use to avoid TOCTOU mismatches
             canonical = str(Path(raw_path).expanduser().resolve())
-        except Exception:
-            return action  # permission check will catch it
+        except Exception as exc:
+            raise PermissionError(f"Failed to canonicalize path: {exc}")
 
         # Crucial security fix: overwrite the argument so the handler CANNOT
         # interpret the path differently than we just authorized.
@@ -625,10 +629,10 @@ class Coordinator:
         new_scope = PermissionScope(
             risk=scope.risk,
             resource_scope=canonical,
-            # Ensure the operation is prefixed with "file." so ScopedPermissionManager checks it
-            operation=f"file.{scope.operation}" if not scope.operation.startswith("file.") else scope.operation,
+            operation=scope.operation,
             approval_requirement=scope.approval_requirement,
             lifetime_seconds=scope.lifetime_seconds,
+            requires_filesystem=tool.requires_filesystem
         )
         return ProposedAction(
             tool_name=action.tool_name,

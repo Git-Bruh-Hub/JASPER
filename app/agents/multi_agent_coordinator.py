@@ -1,4 +1,4 @@
-﻿"""app/agents/multi_agent_coordinator.py -- JASPER v0.7 Slice 6: Planner/Executor delegation.
+"""app/agents/multi_agent_coordinator.py -- JASPER v0.7 Slice 6: Planner/Executor delegation.
 
 MultiAgentCoordinator extends the existing Coordinator with a multi-agent
 orchestration layer.  It does NOT modify the base Coordinator in any way;
@@ -283,9 +283,10 @@ class MultiAgentCoordinator(Coordinator):
             executor_actions = executor_result.proposed_actions
 
             if resolver.is_disagreement(planner_actions, executor_actions):
-                planner_names = planner_handoff.proposed_tool_names()
-                executor_names = frozenset(a.tool_name for a in executor_actions)
-                unexpected = executor_names - planner_names
+                excess_actions = resolver.get_excess_actions(planner_actions, executor_actions)
+                planner_actions_tuple = tuple(planner_actions)
+
+                unexpected_summary = [f"{e.tool_name}(excess={e.excess_count})" for e in excess_actions]
 
                 record(
                     AuditEvent.DISAGREEMENT_DETECTED,
@@ -293,13 +294,13 @@ class MultiAgentCoordinator(Coordinator):
                     task_id=task.task_id,
                     status="DETECTED",
                     detail=(
-                        f"unexpected_tools={sorted(unexpected)!r} "
+                        f"excess_actions={unexpected_summary!r} "
                         f"round={resolver._rounds + 1}/{max_disagreement_rounds}"
                     ),
                 )
                 _LOG.warning(
-                    "planner/executor disagreement task_id=%s unexpected_tools=%s round=%d/%d",
-                    task.task_id, sorted(unexpected),
+                    "planner/executor disagreement task_id=%s excess_actions=%s round=%d/%d",
+                    task.task_id, unexpected_summary,
                     resolver._rounds + 1, max_disagreement_rounds,
                 )
 
@@ -326,8 +327,8 @@ class MultiAgentCoordinator(Coordinator):
                 feedback = DisagreementFeedback(
                     round_number=resolver._rounds,
                     max_rounds=max_disagreement_rounds,
-                    unexpected_tools=unexpected,
-                    planner_tools=planner_names,
+                    excess_actions=excess_actions,
+                    planner_actions=planner_actions_tuple,
                 )
                 # Retry the Executor with explicit disagreement context.
                 continue
