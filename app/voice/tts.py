@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import wave
 from pathlib import Path
+import threading
 
 from app.voice.base import TextToSpeechProvider
 
@@ -36,6 +37,8 @@ class WindowsSpeechTTS(TextToSpeechProvider):
         self.voice = voice
         self.rate = int(rate)
         self.volume = max(0, min(100, int(volume)))
+        self._process = None
+        self._process_lock = threading.Lock()
 
     def speak(self, text: str) -> None:
         text = prepare_speech_text(text)
@@ -51,14 +54,33 @@ class WindowsSpeechTTS(TextToSpeechProvider):
             f"{voice_line}"
             f"$s.Speak('{escaped}'); $s.Dispose()"
         )
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
         )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "Windows speech synthesis failed.")
+        with self._process_lock:
+            self._process = process
+        try:
+            stdout, stderr = process.communicate()
+        finally:
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
+        if process.returncode != 0:
+            raise RuntimeError(stderr.strip() or "Windows speech synthesis failed.")
+
+    def stop(self) -> None:
+        with self._process_lock:
+            process = self._process
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 
 class PiperTTS(TextToSpeechProvider):
@@ -129,3 +151,10 @@ class PiperTTS(TextToSpeechProvider):
             self.log.info("Piper TTS completed chars=%s", len(text))
         finally:
             wav_path.unlink(missing_ok=True)
+
+    def stop(self) -> None:
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            return

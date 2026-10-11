@@ -20,7 +20,6 @@ class MainWindow(QMainWindow):
     request_voice = Signal()
     request_vision = Signal(str, str)
     request_refresh_status = Signal()
-    request_cancel = Signal()
 
     NAV_ITEMS = (
         ("💬  Chat", "Chat"),
@@ -256,12 +255,12 @@ class MainWindow(QMainWindow):
         self.request_voice.connect(self.worker.listen_once)
         self.request_vision.connect(self.worker.analyze_vision)
         self.request_refresh_status.connect(self.worker.refresh_system_status)
-        self.request_cancel.connect(self.worker.cancel_request)
         self.vision_page.analyze_requested.connect(self._analyze_vision)
         self.worker.response_stream.connect(self._on_stream_chunk)
         self.worker.response_ready.connect(self._on_response)
         self.worker.vision_ready.connect(self.vision_page.show_result)
         self.worker.status_changed.connect(self._set_status)
+        self.worker.cancelled.connect(self._on_cancelled)
         self.worker.system_status_ready.connect(self._on_system_status)
         self.worker.error.connect(self._on_error)
         self.worker.finished.connect(self._on_finished)
@@ -301,8 +300,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_send_clicked(self) -> None:
         if self.busy:
-            self.request_cancel.emit()
-            self.send_button.setEnabled(False)  # Disable briefly to prevent spam
+            self.worker.cancel_request()
+            self.send_button.setEnabled(False)
         else:
             self._send_text()
 
@@ -315,6 +314,7 @@ class MainWindow(QMainWindow):
         if image_path:
             from pathlib import Path as _Path
             display_text = f"{text}\n\n📎 {_Path(image_path).name}"
+        self.worker.begin_request()
         self._append_message("You", display_text)
         self.input.clear()
         self._clear_attachment()
@@ -332,6 +332,7 @@ class MainWindow(QMainWindow):
             return
         self._streaming_active = False
         self._streaming_content = ""
+        self.worker.begin_request()
         self._set_busy(True)
         self._show_thinking("Listening")
         self.request_voice.emit()
@@ -339,6 +340,7 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _analyze_vision(self, image_path: str, prompt: str) -> None:
         self._select_page(2)
+        self.worker.begin_request()
         self.request_vision.emit(image_path, prompt)
 
     @Slot(str)
@@ -393,6 +395,22 @@ class MainWindow(QMainWindow):
             self._show_thinking("Listening")
         elif state == "SPEAKING":
             self._show_thinking("Speaking")
+
+    @Slot()
+    def _on_cancelled(self) -> None:
+        """Render a truthful interrupted-request state without treating Stop as an error."""
+        self._streaming_active = False
+        self._stop_thinking()
+        if self.page_stack.currentIndex() == 2 and self.vision_page._busy:
+            self.vision_page.show_error("Vision analysis stopped.")
+        elif self._messages and self._messages[-1][0] == "JASPER" and self._streaming_content:
+            self._messages[-1] = ("JASPER", self._streaming_content + "\n\n*Request stopped.*")
+            self._streaming_content = ""
+            self._render_conversation()
+        else:
+            self._streaming_content = ""
+            self._append_message("JASPER", "*Request stopped.*")
+        self._set_busy(False)
 
     @Slot()
     def _on_finished(self) -> None:

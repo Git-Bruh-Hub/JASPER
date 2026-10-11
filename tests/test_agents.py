@@ -93,6 +93,27 @@ class TestRouterDeep:
 
 
 # ===================================================================
+# 3.5. CognitiveRouter — AUTONOMOUS boundary
+# ===================================================================
+
+
+class TestRouterAutonomous:
+    """Explicit /auto requests should be AUTONOMOUS."""
+
+    router = CognitiveRouter()
+
+    @pytest.mark.parametrize("text", [
+        "/auto do something",
+        "/auto   do something",
+        "/auto",
+        "/auto ",
+        "/auto Analyze this file."
+    ])
+    def test_autonomous_requests(self, text: str):
+        assert self.router.route(text) == CognitiveMode.AUTONOMOUS
+
+
+# ===================================================================
 # 4. CognitiveRouter — false positive resistance
 # ===================================================================
 

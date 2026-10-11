@@ -52,6 +52,8 @@ class CognitiveEngine:
         cancel_callback: Callable[[], bool] | None = None,
     ) -> str:
         self.log.info("starting cognitive run mode=%s", mode.value)
+        if cancel_callback and cancel_callback():
+            raise asyncio.CancelledError()
 
         if mode == CognitiveMode.SIMPLE:
             return await self._run_simple(context_messages, user_text, on_chunk, cancel_callback)

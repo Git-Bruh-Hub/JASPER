@@ -20,6 +20,23 @@ class Tool:
         "type": "object",
         "properties": {},
     })
+    resource_extractor: Callable[[dict[str, Any]], str] | None = None
+    path_argument: str | None = None
+    requires_filesystem: bool = False
+
+
+    def extract_resource(self, arguments: dict[str, Any]) -> str:
+        if self.path_argument:
+            if self.path_argument not in arguments:
+                raise PermissionError(
+                    f"Missing required resource argument: {self.path_argument}"
+                )
+            return str(arguments[self.path_argument])
+
+        if self.resource_extractor:
+            return str(self.resource_extractor(arguments))
+
+        return "global"
 
     def schema(self) -> dict[str, Any]:
         return {
