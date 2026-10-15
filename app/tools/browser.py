@@ -11,11 +11,17 @@ to avoid asyncio loop collisions and ensure clean synchronous tool dispatch.
 from __future__ import annotations
 
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
 _LOG = logging.getLogger("jasper.tools.browser")
+
+
+def get_default_headless() -> bool:
+    """Return False (headed / visible browser) unless JASPER_BROWSER_HEADLESS=true."""
+    return os.environ.get("JASPER_BROWSER_HEADLESS", "false").lower() in ("true", "1", "yes")
 
 
 @dataclass
@@ -30,8 +36,8 @@ class InteractiveElement:
 class BrowserController:
     """Manages an active Playwright browser session for JASPER agents."""
 
-    def __init__(self, headless: bool = True) -> None:
-        self.headless = headless
+    def __init__(self, headless: bool | None = None) -> None:
+        self.headless = get_default_headless() if headless is None else headless
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jasper_browser")
         self._playwright: Any = None
         self._browser: Any = None
@@ -41,7 +47,7 @@ class BrowserController:
 
     def _run_in_pool(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         future = self._pool.submit(func, *args, **kwargs)
-        return future.result(timeout=30)
+        return future.result(timeout=45)
 
     @property
     def is_active(self) -> bool:
@@ -55,16 +61,20 @@ class BrowserController:
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()
+            _LOG.info("Launching Playwright Chromium (headless=%s)", self.headless)
             self._browser = self._playwright.chromium.launch(
                 headless=self.headless,
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--start-maximized",
+                ],
             )
             self._context = self._browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             )
             self._page = self._context.new_page()
-            self._page.set_default_timeout(15000)
+            self._page.set_default_timeout(20000)
         return self._page
 
     def navigate(self, url: str) -> dict[str, Any]:
@@ -178,6 +188,9 @@ class BrowserController:
     def _click_impl(self, index: int) -> dict[str, Any]:
         page = self._ensure_browser_impl()
 
+        if not self._elements:
+            self._get_dom_snapshot_impl()
+
         if index not in self._elements:
             raise KeyError(
                 f"Element [{index}] not found. Available elements: {list(self._elements.keys())[:20]}"
@@ -189,7 +202,10 @@ class BrowserController:
         target = page.locator(el.selector)
         target.scroll_into_view_if_needed()
         target.click()
-        page.wait_for_load_state("domcontentloaded", timeout=5000)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
 
         snapshot = self._get_dom_snapshot_impl()
         return {
@@ -204,7 +220,7 @@ class BrowserController:
     def type_text(
         self, index: int, text: str, press_enter: bool = False
     ) -> dict[str, Any]:
-        """Fill text into an indexed input field."""
+        """Fill text into an indexed input field with intelligent element auto-routing."""
         return self._run_in_pool(self._type_text_impl, index, text, press_enter)
 
     def _type_text_impl(
@@ -212,30 +228,76 @@ class BrowserController:
     ) -> dict[str, Any]:
         page = self._ensure_browser_impl()
 
-        if index not in self._elements:
-            raise KeyError(
-                f"Element [{index}] not found. Available elements: {list(self._elements.keys())[:20]}"
-            )
+        if not self._elements:
+            self._get_dom_snapshot_impl()
 
-        el = self._elements[index]
-        _LOG.info("Typing into element [%d] (%s): %s", index, el.tag, text)
+        target_index = index
+        el = self._elements.get(index)
+
+        # Smart element check: is the requested element actually an editable input/textarea?
+        is_editable = el is not None and (
+            el.tag in ("input", "textarea")
+            or (el.tag == "div" and "search" in el.selector.lower())
+        )
+
+        if not is_editable:
+            # Look for best matching input/textarea on the page (e.g. search fields)
+            search_candidates = [
+                e for e in self._elements.values()
+                if e.tag in ("input", "textarea")
+                and (
+                    "search" in e.text.lower()
+                    or e.element_type == "search"
+                    or "search" in e.selector.lower()
+                )
+            ]
+            general_candidates = [
+                e for e in self._elements.values()
+                if e.tag in ("input", "textarea")
+            ]
+            fallback = (search_candidates or general_candidates or [None])[0]
+
+            if fallback is not None:
+                _LOG.warning(
+                    "Element [%d] is not an editable input (<%s> '%s'). Auto-routing to editable element [%d] (<%s> '%s')",
+                    index,
+                    el.tag if el else "none",
+                    el.text if el else "",
+                    fallback.index,
+                    fallback.tag,
+                    fallback.text,
+                )
+                target_index = fallback.index
+                el = fallback
+            elif el is None:
+                raise KeyError(
+                    f"Element [{index}] not found. Available elements: {list(self._elements.keys())[:20]}"
+                )
+
+        _LOG.info("Typing into element [%d] (<%s> '%s'): %s", target_index, el.tag, el.text, text)
 
         target = page.locator(el.selector)
         target.scroll_into_view_if_needed()
         target.fill(text)
 
-        if press_enter:
+        # Auto-press enter if requested or if it's a search field / single search textarea
+        should_press_enter = press_enter or ("search" in el.text.lower() or el.element_type == "search" or el.tag == "textarea")
+        if should_press_enter:
             target.press("Enter")
-            page.wait_for_load_state("domcontentloaded", timeout=5000)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
 
         snapshot = self._get_dom_snapshot_impl()
         return {
             "status": "typed",
-            "element_index": index,
+            "element_index": target_index,
             "target": f"<{el.tag}> '{el.text}'",
             "value": text,
-            "pressed_enter": press_enter,
+            "pressed_enter": should_press_enter,
             "new_url": page.url,
+            "new_title": page.title(),
             "snapshot": snapshot,
         }
 
@@ -250,7 +312,7 @@ class BrowserController:
         return {
             "url": page.url,
             "title": page.title(),
-            "text": "\n".join(lines[:200]),
+            "text": "\n".join(lines[:300]),
         }
 
     def close(self) -> dict[str, str]:
@@ -280,10 +342,14 @@ class BrowserController:
 _CONTROLLER: BrowserController | None = None
 
 
-def get_browser_controller(headless: bool = True) -> BrowserController:
+def get_browser_controller(headless: bool | None = None) -> BrowserController:
     """Return the global BrowserController instance."""
     global _CONTROLLER
     if _CONTROLLER is None:
+        _CONTROLLER = BrowserController(headless=headless)
+    elif headless is not None and _CONTROLLER.headless != headless:
+        # Recreate controller if headless preference changed
+        _CONTROLLER.close()
         _CONTROLLER = BrowserController(headless=headless)
     return _CONTROLLER
 

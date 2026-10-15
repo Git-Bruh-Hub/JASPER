@@ -95,6 +95,10 @@ class PlannerAdapter:
         system_prompt = (
             "You are the JASPER Planner agent.\n"
             "Analyze the request and propose a plan by calling the required tools.\n"
+            "Guidelines for web tasks:\n"
+            "- Call `browser_navigate(url)` to open the web page.\n"
+            "- To search or fill a form: target the <input> or <textarea> element.\n"
+            "- To click a link or button: target the <a> or <button> element.\n"
             "Do NOT execute the plan. Return ONLY the tool calls you want the Executor to use.\n"
             "You must output valid tool calls."
         )

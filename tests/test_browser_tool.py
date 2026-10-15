@@ -61,6 +61,24 @@ class TestBrowserController:
         read_res = browser.read_text()
         assert "Processed: JASPER_AI" in read_res["text"]
 
+    def test_type_auto_routing_when_element_is_not_input(self, browser: BrowserController):
+        """If caller passes index 1 (a link), auto-route to editable element (input/textarea)."""
+        html = (
+            "data:text/html,"
+            "<html><body>"
+            "<a href='https://example.com'>Logo Link</a>"
+            "<input id='search-box' placeholder='Search privately' />"
+            "</body></html>"
+        )
+        browser.navigate(html)
+
+        # Index 1 is link <a>, Index 2 is <input>
+        type_res = browser.type_text(index=1, text="Autonomous Search")
+        assert type_res["status"] == "typed"
+        # Successfully auto-routed to input element (index 2)
+        assert type_res["element_index"] == 2
+        assert "Search privately" in type_res["target"]
+
     def test_click_invalid_index_raises_keyerror(self, browser: BrowserController):
         html = "data:text/html,<html><body><button>One</button></body></html>"
         browser.navigate(html)
