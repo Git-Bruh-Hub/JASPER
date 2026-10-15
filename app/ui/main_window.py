@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import logging
 from html import escape
 
 from PySide6.QtCore import QMimeData, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
 
+from app.core.approval import ApprovalRequest
 from app.core.config import JASPER_VOICE_ENABLED
+from app.ui.approval_dialog import ApprovalDialog
 from app.ui.markdown_renderer import markdown_to_html
 from app.ui.styles import APP_STYLE
 from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
 from app.ui.worker import JasperWorker
 from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
+
+_LOG = logging.getLogger("jasper.ui.main_window")
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +41,7 @@ class MainWindow(QMainWindow):
         self.worker = worker
         self.thread = thread
         self.busy = False
+        self._shutdown_clean = True
         self._tray: QSystemTrayIcon | None = None
         self.nav_buttons: list[QPushButton] = []
         self._thinking_step = 0
@@ -47,6 +53,8 @@ class MainWindow(QMainWindow):
         self._streaming_active = False
         self._attached_image_path: str | None = None
         self._chat_drag_active = False
+        self._active_approval_dialog: ApprovalDialog | None = None
+        self._active_gate_id: str | None = None
 
         # Periodic status refresh (every 30 seconds)
         self._status_timer = QTimer(self)
@@ -264,6 +272,8 @@ class MainWindow(QMainWindow):
         self.worker.system_status_ready.connect(self._on_system_status)
         self.worker.error.connect(self._on_error)
         self.worker.finished.connect(self._on_finished)
+        if hasattr(self.worker, "approval_requested"):
+            self.worker.approval_requested.connect(self._on_approval_requested)
 
     def _setup_tray(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -410,7 +420,50 @@ class MainWindow(QMainWindow):
         else:
             self._streaming_content = ""
             self._append_message("JASPER", "*Request stopped.*")
+        if hasattr(self, "_active_approval_dialog") and self._active_approval_dialog is not None:
+            try:
+                self._active_approval_dialog.handle_cancelled()
+            except Exception:
+                pass
+            self._active_approval_dialog = None
+            self._active_gate_id = None
         self._set_busy(False)
+
+    @Slot(ApprovalRequest)
+    def _on_approval_requested(self, request: ApprovalRequest) -> None:
+        """Present incoming approval request to user on the GUI thread."""
+        if hasattr(self, "_active_approval_dialog") and self._active_approval_dialog is not None and not self._active_approval_dialog.is_resolved:
+            _LOG.warning(
+                "Rejecting concurrent approval request %s; dialog already active for %s",
+                request.gate_id,
+                self._active_gate_id,
+            )
+            self.worker.resolve_approval(request.gate_id, granted=False)
+            return
+
+        dialog = ApprovalDialog(request, parent=self)
+        self._active_approval_dialog = dialog
+        self._active_gate_id = request.gate_id
+
+        dialog.decision_made.connect(self._on_approval_decision)
+
+        def _cleanup():
+            if getattr(self, "_active_approval_dialog", None) is dialog:
+                self._active_approval_dialog = None
+                self._active_gate_id = None
+
+        dialog.finished.connect(_cleanup)
+        dialog.open()
+
+    @Slot(str, bool)
+    def _on_approval_decision(self, gate_id: str, granted: bool) -> None:
+        """Forward user approval decision to worker."""
+        if getattr(self, "_active_gate_id", None) == gate_id:
+            self._active_approval_dialog = None
+            self._active_gate_id = None
+        success = self.worker.resolve_approval(gate_id, granted)
+        if not success:
+            _LOG.warning("Approval resolution rejected for gate_id=%s, granted=%s", gate_id, granted)
 
     @Slot()
     def _on_finished(self) -> None:
@@ -508,10 +561,42 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._tray is not None:
-            self._tray.hide()
-        self._status_timer.stop()
-        self.thread.quit()
-        self.thread.wait(3000)
+            try:
+                self._tray.hide()
+            except Exception:
+                pass
+        if hasattr(self, "_status_timer") and self._status_timer is not None:
+            self._status_timer.stop()
+        if hasattr(self, "_thinking_timer") and self._thinking_timer is not None:
+            self._thinking_timer.stop()
+
+        # Safely dismiss active approval dialog without granting access
+        if hasattr(self, "_active_approval_dialog") and self._active_approval_dialog is not None:
+            try:
+                self._active_approval_dialog.handle_cancelled()
+            except Exception:
+                pass
+            self._active_approval_dialog = None
+            self._active_gate_id = None
+
+        # Request cooperative cancellation before attempting thread termination
+        if hasattr(self, "worker") and self.worker is not None:
+            try:
+                self.worker.cancel_request()
+            except Exception as exc:
+                _LOG.warning("Failed to cancel worker request during closeEvent: %s", exc)
+
+        # Stop worker thread if running
+        self._shutdown_clean = True
+        if hasattr(self, "thread") and self.thread is not None and self.thread.isRunning():
+            self.thread.quit()
+            stopped = self.thread.wait(3000)
+            if not stopped:
+                self._shutdown_clean = False
+                _LOG.warning(
+                    "Worker thread did not terminate within 3000ms shutdown timeout; unresolved lifecycle state."
+                )
+
         event.accept()
 
     # ------------------------------------------------------------------

@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QObject, Signal, Slot
 
+from app.core.approval import ApprovalRequest
 from app.core.config import JASPER_VOICE_ENABLED
 from app.ui.cancellation import AsyncRequestController
 from app.core.orchestrator import Orchestrator
@@ -12,6 +15,9 @@ from app.core.permissions import PermissionManager
 from app.main import build_registry, build_vision_manager, build_voice_manager
 from app.memory.sqlite_memory import SQLiteMemory
 from app.tools.system import get_system_info
+
+if TYPE_CHECKING:
+    from app.agents.coordinator import Coordinator
 
 
 class JasperWorker(QObject):
@@ -22,17 +28,73 @@ class JasperWorker(QObject):
     vision_ready = Signal(str)
     status_changed = Signal(str)
     system_status_ready = Signal(dict)
+    approval_requested = Signal(ApprovalRequest)
     error = Signal(str)
     finished = Signal()
     cancelled = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, coordinator: Coordinator | None = None) -> None:
         super().__init__()
         self.log = logging.getLogger("jasper.ui.worker")
         self.vision = build_vision_manager()
         self.jasper = Orchestrator(build_registry(self.vision), PermissionManager(), SQLiteMemory(), vision=self.vision)
         self.voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
         self._request_control = AsyncRequestController()
+        self._coordinator: Coordinator | None = None
+        if coordinator is not None:
+            self.set_coordinator(coordinator)
+
+    @property
+    def coordinator(self) -> Coordinator | None:
+        """Return the attached coordinator, or the orchestrator's coordinator if present."""
+        if self._coordinator is not None:
+            return self._coordinator
+        coord = getattr(self.jasper, "multi_agent_coordinator", None)
+        if coord is not None and getattr(coord, "_approval_notifier", None) is None:
+            coord._approval_notifier = self.approval_requested.emit
+        return coord
+
+    def set_coordinator(self, coordinator: Coordinator | None) -> None:
+        """Attach a coordinator and wire its approval notifier to approval_requested."""
+        self._coordinator = coordinator
+        if coordinator is not None and getattr(coordinator, "_approval_notifier", None) is None:
+            coordinator._approval_notifier = self.approval_requested.emit
+        if hasattr(self, "jasper") and self.jasper is not None:
+            from app.agents.multi_agent_coordinator import MultiAgentCoordinator
+            if isinstance(coordinator, MultiAgentCoordinator):
+                self.jasper.multi_agent_coordinator = coordinator
+            elif coordinator is None:
+                self.jasper.multi_agent_coordinator = None
+
+    def notify_approval(self, request: ApprovalRequest) -> None:
+        """Emit approval_requested Qt Signal for an ApprovalRequest."""
+        self.approval_requested.emit(request)
+
+    @Slot(str, bool)
+    def resolve_approval(self, gate_id: str, granted: bool) -> bool:
+        """Resolve a pending approval gate on the attached coordinator.
+
+        Thread-safe: May be called from the Qt GUI thread or connected to a Qt signal.
+        Fails closed: Returns False if no coordinator is configured, if gate_id
+        is invalid, or if the coordinator rejects resolution.
+        """
+        coord = self.coordinator
+        if coord is None:
+            self.log.warning(
+                "resolve_approval rejected: no coordinator configured on worker (gate_id=%s)",
+                gate_id,
+            )
+            return False
+
+        if not isinstance(gate_id, str) or not gate_id.strip():
+            self.log.warning("resolve_approval rejected: invalid gate_id=%r", gate_id)
+            return False
+
+        return coord.resolve_approval(gate_id.strip(), granted=bool(granted))
+
+    def has_active_request(self) -> bool:
+        """Return True if an asyncio request task is currently registered and not done."""
+        return self._request_control.has_active_request()
 
     def begin_request(self) -> None:
         """Prepare a new request from the GUI thread."""
@@ -44,7 +106,10 @@ class JasperWorker(QObject):
         if self.voice is not None:
             stop = getattr(self.voice, "stop", None)
             if callable(stop):
-                stop()
+                try:
+                    stop()
+                except Exception as exc:
+                    self.log.warning("voice.stop failed during cancellation: %s", exc)
 
     def _handle_error(self, exc: Exception, context: str) -> None:
         self.log.exception(f"{context} failed")
