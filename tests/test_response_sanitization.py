@@ -131,3 +131,78 @@ async def test_adapters_sanitize_thinking_tags_in_observations():
     handoff = PlannerResult(task_id="t1", user_text="test", planner_result=planner_result)
     executor_result = await executor_adapter(handoff)
     assert executor_result.observations == ["Planned output"]
+
+
+def test_coordinator_synthesise_answer_with_hero_observations_formats_activity_badges():
+    res = AgentResult(
+        agent_id="executor",
+        observations=["Here is the synthesized summary of the website."],
+    )
+    tool_outputs = [
+        {
+            "tool": "browser_navigate",
+            "status": "success",
+            "result": {
+                "url": "https://duckduckgo.com/?q=test",
+                "title": "Search",
+                "interactive_count": 101,
+                "snapshot": "\n".join([f"[{i}] <button> 'Btn {i}'" for i in range(1, 102)]),
+            },
+        },
+        {
+            "tool": "browser_click",
+            "status": "success",
+            "result": {
+                "target": "[21] Result Link",
+                "new_title": "Target Page",
+            },
+        },
+        {
+            "tool": "browser_read_text",
+            "status": "success",
+            "result": {
+                "title": "Target Page",
+                "text": "Extensive raw text of the entire web page" * 50,
+            },
+        },
+    ]
+
+    synthesised = Coordinator._synthesise_answer(res, tool_outputs)
+
+    # Hero response is front-and-center
+    assert synthesised.startswith("Here is the synthesized summary of the website.")
+    # Activity badges are present
+    assert "---" in synthesised
+    assert "**Actions Taken:**" in synthesised
+    assert "🌐 Navigated to `https://duckduckgo.com/?q=test` (Found 101 interactive elements)" in synthesised
+    assert "👆 Clicked [21] Result Link (New Title: 'Target Page')" in synthesised
+    assert "📖 Read page content: 'Target Page'" in synthesised
+    # Raw DOM snapshot and massive page text are NOT dumped
+    assert "[100] <button> 'Btn 100'" not in synthesised
+    assert ("Extensive raw text of the entire web page" * 50) not in synthesised
+
+
+def test_coordinator_synthesise_answer_without_observations_truncates_large_dom_snapshot():
+    res = AgentResult(agent_id="executor", observations=[])
+    tool_outputs = [
+        {
+            "tool": "browser_navigate",
+            "status": "success",
+            "result": {
+                "url": "https://example.com",
+                "title": "Example Domain",
+                "interactive_count": 30,
+                "snapshot": "\n".join([f"[{i}] <a> 'Item {i}'" for i in range(1, 31)]),
+            },
+        }
+    ]
+
+    synthesised = Coordinator._synthesise_answer(res, tool_outputs)
+
+    assert "🌐 Navigated to https://example.com" in synthesised
+    assert "[1] <a> 'Item 1'" in synthesised
+    assert "[12] <a> 'Item 12'" in synthesised
+    # Truncation marker is present
+    assert "... [18 more interactive elements]" in synthesised
+    # Later elements are truncated from immediate chat dump
+    assert "[25] <a> 'Item 25'" not in synthesised

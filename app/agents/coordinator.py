@@ -764,35 +764,95 @@ class Coordinator:
 
     @staticmethod
     def _synthesise_answer(result: AgentResult, tool_outputs: list[dict[str, Any]]) -> str:
-        """Combine agent observations and tool outputs into a final text answer."""
-        parts: list[str] = []
-        if result.observations:
-            parts.extend(result.observations)
+        """Combine agent observations and tool outputs into a final text answer.
+
+        When observations exist (e.g. from autonomous multi-turn reasoning or agent
+        synthesis), they are presented cleanly as the hero response. Technical tool
+        activities (like navigation or clicks) are rendered as compact activity badges
+        rather than dumping raw DOM snapshots or full page text.
+        """
+        has_hero = bool(result.observations and any(obs.strip() for obs in result.observations))
+        hero_parts: list[str] = [obs for obs in result.observations if obs.strip()] if result.observations else []
+
+        activity_badges: list[str] = []
+        fallback_parts: list[str] = []
+
         for output in tool_outputs:
             if output.get("status") == "success":
                 tool_name = output.get("tool", "")
                 raw_res = output.get("result", "")
                 try:
                     res_data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
-                    if isinstance(res_data, dict) and "path" in res_data:
-                        parts.append(f"✅ Successfully wrote `{res_data['path']}` ({res_data.get('bytes_written', 0)} bytes).")
-                    elif isinstance(res_data, dict) and tool_name in ("browser_navigate", "browser_search"):
-                        parts.append(f"🌐 Navigated to {res_data.get('url')} (Title: '{res_data.get('title', '')}'). Found {res_data.get('interactive_count', 0)} interactive elements.\n\n```\n{res_data.get('snapshot', '')}\n```")
-                    elif isinstance(res_data, dict) and tool_name == "browser_click":
-                        parts.append(f"👆 Clicked {res_data.get('target', '')} (New Title: '{res_data.get('new_title', '')}').")
-                    elif isinstance(res_data, dict) and tool_name == "browser_type":
-                        parts.append(f"✍ Typed into {res_data.get('target', '')}: \"{res_data.get('value', '')}\".")
-                    elif isinstance(res_data, dict) and tool_name == "browser_read_text":
-                        parts.append(f"📖 Page Content ({res_data.get('title', '')}):\n\n{res_data.get('text', '')}")
-                    elif isinstance(res_data, dict) and tool_name == "browser_close":
-                        parts.append("🛑 Closed browser session.")
-                    else:
-                        parts.append(f"[Tool {tool_name}]: {raw_res}")
                 except Exception:
-                    parts.append(f"[Tool {tool_name}]: {raw_res}")
+                    res_data = raw_res
+
+                if isinstance(res_data, dict):
+                    if "path" in res_data:
+                        path = res_data["path"]
+                        bytes_w = res_data.get("bytes_written", 0)
+                        msg = f"✅ Successfully wrote `{path}` ({bytes_w} bytes)."
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name in ("browser_navigate", "browser_search"):
+                        url = res_data.get("url", "")
+                        title = res_data.get("title", "")
+                        count = res_data.get("interactive_count", 0)
+                        badge = f"🌐 Navigated to `{url}` (Found {count} interactive elements)"
+                        activity_badges.append(badge)
+
+                        snapshot = res_data.get("snapshot", "")
+                        lines = [ln for ln in snapshot.splitlines() if ln.strip()]
+                        if len(lines) > 15:
+                            preview_text = "\n".join(lines[:12]) + f"\n... [{len(lines) - 12} more interactive elements]"
+                        else:
+                            preview_text = snapshot
+                        fallback_parts.append(
+                            f"🌐 Navigated to {url} (Title: '{title}'). Found {count} interactive elements.\n\n```\n{preview_text}\n```"
+                        )
+                    elif tool_name == "browser_click":
+                        target = res_data.get("target", "")
+                        new_title = res_data.get("new_title", "")
+                        title_info = f" (New Title: '{new_title}')" if new_title else ""
+                        msg = f"👆 Clicked {target}{title_info}"
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name == "browser_type":
+                        target = res_data.get("target", "")
+                        val = res_data.get("value", "")
+                        msg = f"✍ Typed into {target}: \"{val}\""
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name == "browser_read_text":
+                        title = res_data.get("title", "")
+                        text = res_data.get("text", "")
+                        badge = f"📖 Read page content: '{title}'"
+                        activity_badges.append(badge)
+                        fallback_parts.append(f"📖 Page Content ({title}):\n\n{text}")
+                    elif tool_name == "browser_close":
+                        msg = "🛑 Closed browser session."
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    else:
+                        activity_badges.append(f"🔧 Tool `{tool_name}`: completed")
+                        fallback_parts.append(f"[Tool {tool_name}]: {raw_res}")
+                else:
+                    activity_badges.append(f"🔧 Tool `{tool_name}`: completed")
+                    fallback_parts.append(f"[Tool {tool_name}]: {raw_res}")
             elif output.get("status") == "UNKNOWN":
-                parts.append(f"[Tool {output['tool']}]: outcome unknown — {output.get('error', '')}")
+                msg = f"⚠️ Tool `{output.get('tool', '')}`: outcome unknown — {output.get('error', '')}"
+                activity_badges.append(msg)
+                fallback_parts.append(msg)
             else:
-                parts.append(f"[Tool {output['tool']}] failed: {output.get('error', 'unknown error')}")
-        combined = "\n".join(parts) if parts else ""
+                msg = f"❌ Tool `{output.get('tool', '')}` failed: {output.get('error', 'unknown error')}"
+                activity_badges.append(msg)
+                fallback_parts.append(msg)
+
+        if has_hero:
+            parts = list(hero_parts)
+            if activity_badges:
+                parts.append("---\n**Actions Taken:**\n" + "\n".join(f"* {b}" for b in activity_badges))
+            combined = "\n\n".join(parts)
+        else:
+            combined = "\n\n".join(fallback_parts) if fallback_parts else ""
+
         return sanitize_thinking_tags(combined)
