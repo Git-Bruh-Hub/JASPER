@@ -12,3 +12,8 @@ data/voices/*
 .pytest_cache/
 
 graphify-out/cache/
+
+# Desktop autonomy workspace and test temporary directories
+workspace/
+pytest-temp/
+test-tmp/

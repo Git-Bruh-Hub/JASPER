@@ -770,7 +770,16 @@ class Coordinator:
             parts.extend(result.observations)
         for output in tool_outputs:
             if output.get("status") == "success":
-                parts.append(f"[Tool {output['tool']}]: {output['result']}")
+                tool_name = output.get("tool", "")
+                raw_res = output.get("result", "")
+                try:
+                    res_data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
+                    if isinstance(res_data, dict) and "path" in res_data:
+                        parts.append(f"✅ Successfully wrote `{res_data['path']}` ({res_data.get('bytes_written', 0)} bytes).")
+                    else:
+                        parts.append(f"[Tool {tool_name}]: {raw_res}")
+                except Exception:
+                    parts.append(f"[Tool {tool_name}]: {raw_res}")
             elif output.get("status") == "UNKNOWN":
                 parts.append(f"[Tool {output['tool']}]: outcome unknown — {output.get('error', '')}")
             else:

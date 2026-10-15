@@ -19,3 +19,15 @@ def read_text_file(path: str) -> str:
     if p.stat().st_size > MAX_READ_BYTES:
         raise ValueError(f"File exceeds {MAX_READ_BYTES} byte safety limit.")
     return p.read_text(encoding="utf-8", errors="replace")
+
+
+def write_text_file(path: str, content: str) -> dict:
+    p = Path(path).expanduser().resolve()
+    if p.suffix.lower() not in TEXT_EXTENSIONS:
+        raise ValueError(f"File extension '{p.suffix}' is not allowlisted for text writing.")
+    content_bytes = content.encode("utf-8")
+    if len(content_bytes) > MAX_READ_BYTES:
+        raise ValueError(f"Content exceeds {MAX_READ_BYTES} byte safety limit.")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return {"path": str(p), "bytes_written": len(content_bytes), "status": "written"}

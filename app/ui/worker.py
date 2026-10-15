@@ -124,6 +124,8 @@ class JasperWorker(QObject):
             self.error.emit("The specified image could not be found.")
         elif "model" in err_str and "not found" in err_str:
             self.error.emit("The required AI model is not downloaded or available in Ollama.")
+        elif isinstance(exc, PermissionError) or "denied" in err_str:
+            self.error.emit(f"Operation cancelled: {exc}")
         else:
             self.error.emit("An unexpected internal error occurred. Please check the logs.")
 
