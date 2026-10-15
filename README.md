@@ -1,8 +1,8 @@
-# JASPER v0.6.1
+# JASPER (v0.7 Core)
 
 **JASPER = Just Another Smart Program Executing Request**
 
-Local-first personal AI assistant foundation for Windows 11.
+Local-first personal AI assistant foundation for Windows 11. Built on a capability-based security boundary with Ollama inference, explicit memory, PySide6 desktop workspace, multimodal vision, and Hive Mind multi-agent coordination.
 
 ## v0.2 scope
 
@@ -197,3 +197,26 @@ The desktop interface is the main application shell. Vision, richer task managem
 ## Safety boundary
 
 JASPER still uses a read-only permission layer. The current tool set has no arbitrary shell, delete-file, registry, admin, or destructive tool.
+
+## v0.7 — Hive Mind Multi-Agent Architecture, Desktop Approval & Live Harness Verification
+
+The repository implements the v0.7 Hive Mind multi-agent architecture (Slices 1–7), desktop approval integration, and controlled live-model verification (Steps 7–18B):
+- Typed contracts (`app/agents/contracts.py`).
+- Capability-based `ScopedPermissionManager` with workspace boundary containment.
+- Asynchronous `ApprovalGate` and thread-safe resolution API (`Coordinator.resolve_approval`).
+- Guarded `Coordinator` recovery (`MultiAgentCoordinator.reset()`) and planner rejection audit events.
+- PySide6 desktop approval presentation bridge (`JasperWorker.approval_requested`) and modal dialog (`ApprovalDialog`) with recursive privacy redaction.
+- Response sanitization (`sanitize_thinking_tags`) stripping model reasoning artifacts.
+- Deterministic end-to-end integration test suite (`tests/test_desktop_approval_e2e.py`).
+- Isolated live-model test harness (`tests/support/live_harness.py`, `tests/test_live_harness_contracts.py`) validated against local Ollama `qwen3:14b`.
+
+> **Security Note:** Desktop autonomous execution (`/auto`) is **disabled by default** in normal desktop startup (`app/desktop.py`) and fails closed unless a coordinator is explicitly injected in a controlled test harness.
+
+For complete architectural and development documentation, see the Project Brain:
+- [PROJECT_STATE.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/PROJECT_STATE.md) — Ground-truth verified project state and tests
+- [ARCHITECTURE.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/ARCHITECTURE.md) — Full system architecture and request flow
+- [PROJECT_VISION.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/PROJECT_VISION.md) — Long-term project vision and safety principles
+- [ROADMAP.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/ROADMAP.md) — Dependency-aware development milestones
+- [DECISIONS.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/DECISIONS.md) — Architecture decision records (ADRs)
+- [AGENTS.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/AGENTS.md) — Mandatory development rules for AI agents
+
