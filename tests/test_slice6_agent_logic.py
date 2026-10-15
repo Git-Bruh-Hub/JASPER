@@ -147,6 +147,79 @@ class TestPlannerAgent:
         assert result.errors
         assert "AgentResult" in result.errors[0]
 
+    @pytest.mark.asyncio
+    async def test_planner_agent_emits_structured_terminal_audit_events_standalone(self):
+        audit_events = []
+
+        class _AuditCapture(logging.Handler):
+            def emit(self, record):
+                import json
+                try:
+                    payload = json.loads(record.getMessage())
+                    audit_events.append(payload)
+                except Exception:
+                    pass
+
+        handler = _AuditCapture()
+        handler.setLevel(logging.DEBUG)
+        audit_logger = logging.getLogger("jasper.audit")
+        old_level = audit_logger.level
+        audit_logger.setLevel(logging.DEBUG)
+        audit_logger.addHandler(handler)
+
+        try:
+            planner = PlannerAgent()
+            budget = CoordinatorBudget()
+
+            # Case 1: Success emits RUNNING and SUCCESS
+            task_success = PlannerTask(user_text="success task")
+            async def good_planner(t):
+                return AgentResult(agent_id="planner", proposed_actions=[_read_action()])
+            await planner.invoke(good_planner, task_success, budget)
+
+            events_1 = [e for e in audit_events if e.get("task_id") == task_success.task_id]
+            assert [e.get("status") for e in events_1] == ["RUNNING", "SUCCESS"]
+
+            # Case 2: Exception in callable emits RUNNING and FAILED
+            audit_events.clear()
+            task_exc = PlannerTask(user_text="exc task")
+            async def exc_planner(t):
+                raise RuntimeError("model network timeout")
+            res_exc = await planner.invoke(exc_planner, task_exc, budget)
+            assert res_exc.errors
+
+            events_2 = [e for e in audit_events if e.get("task_id") == task_exc.task_id]
+            assert [e.get("status") for e in events_2] == ["RUNNING", "FAILED"]
+            assert "exception:RuntimeError" in events_2[1].get("detail", "")
+
+            # Case 3: Malformed return emits RUNNING and FAILED
+            audit_events.clear()
+            task_malformed = PlannerTask(user_text="malformed task")
+            async def bad_return(t):
+                return "not a result"
+            res_bad = await planner.invoke(bad_return, task_malformed, budget)
+            assert res_bad.errors
+
+            events_3 = [e for e in audit_events if e.get("task_id") == task_malformed.task_id]
+            assert [e.get("status") for e in events_3] == ["RUNNING", "FAILED"]
+            assert events_3[1].get("detail") == "non_agent_result"
+
+            # Case 4: AgentResult with errors emits RUNNING and FAILED
+            audit_events.clear()
+            task_errors = PlannerTask(user_text="error result task")
+            async def error_result(t):
+                return AgentResult(agent_id="planner", errors=["internal planning error"])
+            res_err = await planner.invoke(error_result, task_errors, budget)
+            assert res_err.errors
+
+            events_4 = [e for e in audit_events if e.get("task_id") == task_errors.task_id]
+            assert [e.get("status") for e in events_4] == ["RUNNING", "FAILED"]
+            assert events_4[1].get("detail") == "planner_errors:1"
+
+        finally:
+            audit_logger.removeHandler(handler)
+            audit_logger.setLevel(old_level)
+
 
 class TestExecutorAgent:
 
@@ -232,10 +305,38 @@ class TestDelegation:
     @pytest.mark.asyncio
     async def test_invalid_handoff_is_rejected_safely(self):
         coord = _make_coordinator()
+        executor_called = False
+
         async def error_planner(t): raise RuntimeError("planner crashed")
-        async def executor_callable(h, f): return AgentResult(agent_id="executor")
-        answer = await coord.run_multi_agent(error_planner, executor_callable, "test")
-        assert isinstance(answer, str)
+        async def executor_callable(h, f):
+            nonlocal executor_called
+            executor_called = True
+            return AgentResult(agent_id="executor")
+
+        with pytest.raises(ValueError, match="Planner failed with errors"):
+            await coord.run_multi_agent(error_planner, executor_callable, "test")
+
+        assert coord.state == CoordinatorState.ERROR
+        assert executor_called is False
+
+    @pytest.mark.asyncio
+    async def test_planner_direct_errors_fails_before_executor_is_called(self):
+        coord = _make_coordinator()
+        executor_called = False
+
+        async def error_planner(t):
+            return AgentResult(agent_id="planner", errors=["model refused to plan"])
+
+        async def executor_callable(h, f):
+            nonlocal executor_called
+            executor_called = True
+            return AgentResult(agent_id="executor")
+
+        with pytest.raises(ValueError, match="Planner failed with errors: model refused to plan"):
+            await coord.run_multi_agent(error_planner, executor_callable, "test")
+
+        assert coord.state == CoordinatorState.ERROR
+        assert executor_called is False
 
     @pytest.mark.asyncio
     async def test_planner_executor_context_boundaries_respected(self):
@@ -252,6 +353,267 @@ class TestDelegation:
         assert len(received_args) == 1
         assert received_args[0][0] is PlannerResult
         assert received_args[0][1] is type(None)
+
+    @pytest.mark.asyncio
+    async def test_malformed_planner_output_enters_error_without_side_effects(self):
+        tool_executed = False
+        approval_requested = False
+        executor_called = False
+
+        def handler(**kwargs):
+            nonlocal tool_executed
+            tool_executed = True
+            return "executed"
+
+        def notifier(req):
+            nonlocal approval_requested
+            approval_requested = True
+
+        reg = ToolRegistry()
+        reg.register(Tool(
+            name="file.write",
+            description="test write",
+            risk=Risk.WRITE,
+            handler=handler,
+            path_argument="path",
+            requires_filesystem=True,
+        ))
+        pm = ScopedPermissionManager(workspace_root=WORKSPACE, allowed_risks=frozenset({Risk.READ, Risk.WRITE}))
+        coord = MultiAgentCoordinator(
+            registry=reg,
+            permissions=pm,
+            approval_notifier=notifier,
+        )
+
+        class Unserializable:
+            pass
+
+        scope = PermissionScope(
+            risk="write",
+            resource_scope=str(WORKSPACE / "out.txt"),
+            operation="file.write",
+            approval_requirement=ApprovalRequirement.ALWAYS,
+            requires_filesystem=True,
+        )
+        malformed_action = ProposedAction(
+            tool_name="file.write",
+            arguments={"path": str(WORKSPACE / "out.txt"), "bad_payload": Unserializable()},
+            scope=scope,
+            rationale="malformed planner action",
+        )
+
+        async def planner_callable(t):
+            return AgentResult(agent_id="planner", proposed_actions=[malformed_action])
+
+        async def executor_callable(h, f):
+            nonlocal executor_called
+            executor_called = True
+            return AgentResult(agent_id="executor", proposed_actions=[malformed_action])
+
+        with pytest.raises(ValueError, match="Planner proposed an uncanonicalizable action"):
+            await coord.run_multi_agent(planner_callable, executor_callable, "test")
+
+        assert coord.state == CoordinatorState.ERROR
+        assert executor_called is False
+        assert tool_executed is False
+        assert approval_requested is False
+
+    @pytest.mark.asyncio
+    async def test_unregistered_tool_fails_before_executor_is_called(self):
+        coord = _make_coordinator()
+        executor_called = False
+
+        async def planner_callable(t):
+            return AgentResult(
+                agent_id="planner",
+                proposed_actions=[
+                    ProposedAction(
+                        tool_name="unregistered_tool",
+                        arguments={},
+                        scope=PermissionScope(risk="read", resource_scope="none", operation="none", approval_requirement=ApprovalRequirement.NEVER),
+                        rationale="propose unregistered",
+                    )
+                ]
+            )
+
+        async def executor_callable(h, f):
+            nonlocal executor_called
+            executor_called = True
+            return AgentResult(agent_id="executor")
+
+        with pytest.raises(ValueError, match="Planner proposed unregistered tool"):
+            await coord.run_multi_agent(planner_callable, executor_callable, "test")
+
+        assert coord.state == CoordinatorState.ERROR
+        assert executor_called is False
+
+    @pytest.mark.asyncio
+    async def test_filesystem_tool_missing_path_fails_before_executor_is_called(self):
+        reg = ToolRegistry()
+        reg.register(Tool(
+            name="file.write",
+            description="test write",
+            risk=Risk.WRITE,
+            handler=lambda path: "ok",
+            path_argument="path",
+            requires_filesystem=True,
+        ))
+        pm = ScopedPermissionManager(workspace_root=WORKSPACE, allowed_risks=frozenset({Risk.READ, Risk.WRITE}))
+        coord = MultiAgentCoordinator(registry=reg, permissions=pm)
+        executor_called = False
+
+        scope = PermissionScope(
+            risk="write",
+            resource_scope="out.txt",
+            operation="file.write",
+            approval_requirement=ApprovalRequirement.NEVER,
+            requires_filesystem=True,
+        )
+        action_without_path = ProposedAction(
+            tool_name="file.write",
+            arguments={},  # missing required 'path' argument
+            scope=scope,
+            rationale="missing path argument",
+        )
+
+        async def planner_callable(t):
+            return AgentResult(agent_id="planner", proposed_actions=[action_without_path])
+
+        async def executor_callable(h, f):
+            nonlocal executor_called
+            executor_called = True
+            return AgentResult(agent_id="executor")
+
+        with pytest.raises(ValueError, match="Planner proposed an uncanonicalizable action"):
+            await coord.run_multi_agent(planner_callable, executor_callable, "test")
+
+        assert coord.state == CoordinatorState.ERROR
+        assert executor_called is False
+
+    @pytest.mark.asyncio
+    async def test_coordinator_recovery_allows_subsequent_valid_request(self):
+        coord = _make_coordinator()
+        executor_called = False
+
+        # Turn 1: Invalid planner output fails and sets state to ERROR
+        async def bad_planner(t):
+            return AgentResult(agent_id="planner", errors=["model refused to plan"])
+        async def executor_callable(h, f):
+            nonlocal executor_called
+            executor_called = True
+            return AgentResult(agent_id="executor")
+
+        with pytest.raises(ValueError, match="Planner failed with errors"):
+            await coord.run_multi_agent(bad_planner, executor_callable, "turn 1 bad")
+
+        assert coord.state == CoordinatorState.ERROR
+        assert executor_called is False
+
+        # Turn 2 without recovery must raise RuntimeError because state is not IDLE
+        async def good_planner(t):
+            return AgentResult(agent_id="planner", proposed_actions=[_read_action()])
+
+        with pytest.raises(RuntimeError, match="not in IDLE state"):
+            await coord.run_multi_agent(good_planner, executor_callable, "turn 2 unrecovered")
+
+        # Explicit recovery transitions ERROR -> IDLE safely
+        coord.reset()
+        assert coord.state == CoordinatorState.IDLE
+
+        # Turn 3 on the same retained instance now succeeds
+        answer = await coord.run_multi_agent(good_planner, executor_callable, "turn 3 good")
+        assert isinstance(answer, str)
+        assert coord.state == CoordinatorState.IDLE
+        assert executor_called is True
+
+    def test_recovery_only_allowed_from_safe_state(self):
+        coord = _make_coordinator()
+        assert coord.state == CoordinatorState.IDLE
+
+        # IDLE -> IDLE is a safe no-op
+        coord.reset()
+        assert coord.state == CoordinatorState.IDLE
+
+        # Active states must reject reset
+        coord._state = CoordinatorState.ACTING
+        with pytest.raises(RuntimeError, match="Cannot reset coordinator while in active state 'ACTING'"):
+            coord.reset()
+
+        coord._state = CoordinatorState.PLANNING
+        with pytest.raises(RuntimeError, match="Cannot reset coordinator while in active state 'PLANNING'"):
+            coord.reset()
+
+        # ERROR state allows reset
+        coord._state = CoordinatorState.ERROR
+        coord.reset()
+        assert coord.state == CoordinatorState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_planner_rejection_emits_structured_audit_event_without_duplicate_or_payload_leak(self):
+        audit_events = []
+
+        class _AuditCapture(logging.Handler):
+            def emit(self, record):
+                import json
+                try:
+                    payload = json.loads(record.getMessage())
+                    audit_events.append(payload)
+                except Exception:
+                    pass
+
+        handler = _AuditCapture()
+        handler.setLevel(logging.DEBUG)
+        audit_logger = logging.getLogger("jasper.audit")
+        old_level = audit_logger.level
+        audit_logger.setLevel(logging.DEBUG)
+        audit_logger.addHandler(handler)
+
+        try:
+            coord = _make_coordinator()
+            executor_called = False
+
+            class SecretToken:
+                secret = "super_secret_password_123"
+
+            bad_action = ProposedAction(
+                tool_name="read_tool",
+                arguments={"secret_token": SecretToken()},
+                scope=_read_scope(),
+                rationale="leak test",
+            )
+
+            async def bad_planner(t):
+                return AgentResult(agent_id="planner", proposed_actions=[bad_action])
+
+            async def executor_callable(h, f):
+                nonlocal executor_called
+                executor_called = True
+                return AgentResult(agent_id="executor")
+
+            with pytest.raises(ValueError, match="Planner proposed an uncanonicalizable action"):
+                await coord.run_multi_agent(bad_planner, executor_callable, "test audit leak")
+
+            assert coord.state == CoordinatorState.ERROR
+            assert executor_called is False
+        finally:
+            audit_logger.removeHandler(handler)
+            audit_logger.setLevel(old_level)
+
+        planner_events = [e for e in audit_events if e.get("event") == AuditEvent.PLANNER_INVOKED.value]
+        assert len(planner_events) == 2, f"Expected exactly RUNNING and FAILED events, got {planner_events}"
+
+        statuses = [e.get("status") for e in planner_events]
+        assert statuses == ["RUNNING", "FAILED"]
+
+        # Confirm no duplicate terminal event (SUCCESS was never emitted)
+        assert "SUCCESS" not in statuses
+
+        # Confirm payload hygiene: no raw arguments or sensitive details leaked into audit log
+        failed_event = planner_events[1]
+        assert failed_event.get("actor") == "coordinator"
+        assert "super_secret_password_123" not in str(failed_event)
+        assert "SecretToken" not in str(failed_event)
+        assert "unserializable_arguments:read_tool" in failed_event.get("detail", "")
 
 
 class TestDisagreement:
