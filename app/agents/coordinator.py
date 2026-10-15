@@ -80,8 +80,8 @@ _LEGAL_TRANSITIONS: dict[CoordinatorState, frozenset[CoordinatorState]] = {
     CoordinatorState.PLANNING:  frozenset({CoordinatorState.ACTING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
     CoordinatorState.ACTING:    frozenset({CoordinatorState.APPROVING, CoordinatorState.OBSERVING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
     CoordinatorState.APPROVING: frozenset({CoordinatorState.ACTING, CoordinatorState.OBSERVING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
-    CoordinatorState.OBSERVING: frozenset({CoordinatorState.VERIFYING, CoordinatorState.ACTING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
-    CoordinatorState.VERIFYING: frozenset({CoordinatorState.IDLE, CoordinatorState.ACTING, CoordinatorState.ERROR}),
+    CoordinatorState.OBSERVING: frozenset({CoordinatorState.VERIFYING, CoordinatorState.PLANNING, CoordinatorState.ACTING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
+    CoordinatorState.VERIFYING: frozenset({CoordinatorState.IDLE, CoordinatorState.PLANNING, CoordinatorState.ACTING, CoordinatorState.ERROR}),
     CoordinatorState.ERROR:     frozenset({CoordinatorState.IDLE}),
 }
 
@@ -97,7 +97,7 @@ class CoordinatorBudget:
     Exceeding any limit raises ``BudgetExhaustedError`` and terminates the
     run.  Limits default to conservative values safe for local hardware.
     """
-    max_agent_rounds: int = 6       # total agent invocations
+    max_agent_rounds: int = 12      # total agent invocations
     max_tool_calls: int = 10        # total tool executions
     max_approval_requests: int = 5  # total approval gates opened
     timeout_seconds: float = 120.0  # wall-clock hard limit
@@ -776,7 +776,7 @@ class Coordinator:
                     res_data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
                     if isinstance(res_data, dict) and "path" in res_data:
                         parts.append(f"✅ Successfully wrote `{res_data['path']}` ({res_data.get('bytes_written', 0)} bytes).")
-                    elif isinstance(res_data, dict) and tool_name == "browser_navigate":
+                    elif isinstance(res_data, dict) and tool_name in ("browser_navigate", "browser_search"):
                         parts.append(f"🌐 Navigated to {res_data.get('url')} (Title: '{res_data.get('title', '')}'). Found {res_data.get('interactive_count', 0)} interactive elements.\n\n```\n{res_data.get('snapshot', '')}\n```")
                     elif isinstance(res_data, dict) and tool_name == "browser_click":
                         parts.append(f"👆 Clicked {res_data.get('target', '')} (New Title: '{res_data.get('new_title', '')}').")

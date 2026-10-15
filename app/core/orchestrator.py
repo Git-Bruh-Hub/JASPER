@@ -438,12 +438,14 @@ class Orchestrator:
             
             planner_adapter = self.planner_callable or PlannerAdapter(self.models, self.registry)
             executor_adapter = self.executor_callable or ExecutorAdapter(self.models, self.registry)
+            effective_max_turns = 1 if self.planner_callable is not None else 4
             
             answer = await self.multi_agent_coordinator.run_multi_agent(
                 planner_callable=planner_adapter,
                 executor_callable=executor_adapter,
                 user_text=clean_text,
                 cancel_callback=cancel_callback,
+                max_turns=effective_max_turns,
             )
             self.memory.add("assistant", answer)
             await self._emit_local_response(answer, on_chunk)

@@ -19,6 +19,7 @@ from app.tools.browser import (
     browser_get_dom,
     browser_navigate,
     browser_read_text,
+    browser_search,
     browser_type,
 )
 from app.tools.filesystem import write_text_file
@@ -64,6 +65,27 @@ def register_desktop_tools(registry: ToolRegistry) -> None:
             path_argument="path",
             requires_filesystem=True,
             resource_extractor=lambda args: args.get("path", ""),
+        ))
+
+    # 1.5. Browser Search (Risk.READ -> read-only web search)
+    if "browser_search" not in existing_tools:
+        registry.register(Tool(
+            name="browser_search",
+            description="Search the web using DuckDuckGo and inspect the search results snapshot.",
+            risk=Risk.READ,
+            handler=browser_search,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query (e.g. 'local AI models 2026').",
+                    },
+                },
+                "required": ["query"],
+            },
+            resource_extractor=lambda args: f"https://duckduckgo.com/?q={args.get('query', '')}",
+            requires_filesystem=False,
         ))
 
     # 2. Browser Navigation (Risk.READ -> read-only page inspection)

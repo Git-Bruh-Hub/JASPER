@@ -94,13 +94,15 @@ class PlannerAdapter:
     ) -> AgentResult:
         system_prompt = (
             "You are the JASPER Planner agent.\n"
-            "Analyze the request and propose a plan by calling the required tools.\n"
+            "Analyze the user request and any observations from previous action results.\n"
+            "If more information or actions are needed, propose tool calls for the Executor to run.\n"
             "Guidelines for web tasks:\n"
-            "- Call `browser_navigate(url)` to open the web page.\n"
-            "- To search or fill a form: target the <input> or <textarea> element.\n"
-            "- To click a link or button: target the <a> or <button> element.\n"
-            "Do NOT execute the plan. Return ONLY the tool calls you want the Executor to use.\n"
-            "You must output valid tool calls."
+            "- To search the web: call `browser_search(query)` or `browser_navigate(url)`.\n"
+            "- To fill a search bar or form: call `browser_type(index, text)`.\n"
+            "- To click a search result or link: call `browser_click(index)`.\n"
+            "- To read page content: call `browser_read_text()`.\n"
+            "- Once you have enough information to answer the user's request, do NOT call any tools. "
+            "Provide your complete, detailed answer directly in your response."
         )
         messages = [
             {"role": "system", "content": system_prompt},

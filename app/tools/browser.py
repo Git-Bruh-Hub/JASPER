@@ -31,6 +31,7 @@ class InteractiveElement:
     element_type: str
     text: str
     selector: str
+    is_search_result: bool = False
 
 
 class BrowserController:
@@ -76,6 +77,12 @@ class BrowserController:
             self._page = self._context.new_page()
             self._page.set_default_timeout(20000)
         return self._page
+
+    def search(self, query: str) -> dict[str, Any]:
+        """Search the web using DuckDuckGo and return search results snapshot."""
+        import urllib.parse
+        encoded = urllib.parse.quote_plus(query)
+        return self.navigate(f"https://duckduckgo.com/?q={encoded}")
 
     def navigate(self, url: str) -> dict[str, Any]:
         """Navigate to a URL and return a clean interactive DOM snapshot."""
@@ -143,12 +150,22 @@ class BrowserController:
                 const rawText = (el.innerText || el.value || placeholder || ariaLabel || '').trim();
                 const text = rawText.replace(/\\s+/g, ' ').slice(0, 60);
 
+                let isSearchResult = false;
+                if (tag === 'a' && (
+                    el.closest('article, [data-testid="result"], .result, .g, li.b_algo, .search-result') ||
+                    el.querySelector('h2, h3') ||
+                    el.closest('h2, h3')
+                )) {
+                    isSearchResult = true;
+                }
+
                 results.push({
                     index: idx,
                     tag: tag,
                     element_type: type,
                     text: text,
-                    selector: `[data-jasper-id="${idx}"]`
+                    selector: `[data-jasper-id="${idx}"]`,
+                    is_search_result: isSearchResult
                 });
                 idx++;
             }
@@ -163,6 +180,7 @@ class BrowserController:
                 element_type=item["element_type"],
                 text=item["text"],
                 selector=item["selector"],
+                is_search_result=item.get("is_search_result", False),
             )
             for item in raw_elements
         }
@@ -176,8 +194,9 @@ class BrowserController:
 
         for el in self._elements.values():
             type_info = f" type='{el.element_type}'" if el.element_type else ""
+            res_info = " [Search Result]" if el.is_search_result else ""
             label_info = f" '{el.text}'" if el.text else ""
-            lines.append(f"[{el.index}] <{el.tag}{type_info}>{label_info}")
+            lines.append(f"[{el.index}] <{el.tag}{type_info}>{res_info}{label_info}")
 
         return "\n".join(lines)
 
@@ -352,6 +371,11 @@ def get_browser_controller(headless: bool | None = None) -> BrowserController:
         _CONTROLLER.close()
         _CONTROLLER = BrowserController(headless=headless)
     return _CONTROLLER
+
+
+def browser_search(query: str) -> dict[str, Any]:
+    """Search the web using DuckDuckGo and return search results snapshot."""
+    return get_browser_controller().search(query=str(query))
 
 
 def browser_navigate(url: str) -> dict[str, Any]:
