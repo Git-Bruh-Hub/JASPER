@@ -1,4 +1,4 @@
-﻿"""app/agents/planner.py -- JASPER v0.7 Slice 6: Planner cognitive role.
+"""app/agents/planner.py -- JASPER v0.7 Slice 6: Planner cognitive role.
 
 The Planner is a *cognitive role*, not a tool executor.  Its job is to
 reason about a task and propose a typed set of actions via AgentResult.
@@ -61,6 +61,7 @@ class PlannerAgent:
         task: PlannerTask,
         budget: CoordinatorBudget,
         cancel_callback: Callable[[], bool] | None = None,
+        emit_terminal: bool = True,
     ) -> AgentResult:
         """Invoke the planner callable with containment and budget accounting.
 
@@ -76,6 +77,10 @@ class PlannerAgent:
             before the callable is awaited.
         cancel_callback:
             Optional; if it returns True, asyncio.CancelledError is raised.
+        emit_terminal:
+            If True (default), emits a terminal AuditEvent.PLANNER_INVOKED
+            (SUCCESS) on valid return.  Set to False when downstream
+            coordinator validation determines the terminal event.
 
         Returns
         -------
@@ -106,6 +111,14 @@ class PlannerAgent:
             raise
         except Exception as exc:
             _LOG.warning("planner callable raised exc=%s", exc)
+            if emit_terminal:
+                record(
+                    AuditEvent.PLANNER_INVOKED,
+                    actor=self.agent_id,
+                    task_id=task.task_id,
+                    status="FAILED",
+                    detail=f"exception:{type(exc).__name__}",
+                )
             return AgentResult(
                 agent_id=self.agent_id,
                 errors=[f"Planner invocation failed: {exc}"],
@@ -116,6 +129,14 @@ class PlannerAgent:
                 "planner callable returned %r instead of AgentResult",
                 type(raw).__name__,
             )
+            if emit_terminal:
+                record(
+                    AuditEvent.PLANNER_INVOKED,
+                    actor=self.agent_id,
+                    task_id=task.task_id,
+                    status="FAILED",
+                    detail="non_agent_result",
+                )
             return AgentResult(
                 agent_id=self.agent_id,
                 errors=[
@@ -125,11 +146,21 @@ class PlannerAgent:
             )
 
         _check_cancelled(cancel_callback)
-        record(
-            AuditEvent.PLANNER_INVOKED,
-            actor=self.agent_id,
-            task_id=task.task_id,
-            status="SUCCESS",
-            detail=f"proposed_actions={len(raw.proposed_actions)}",
-        )
+        if emit_terminal:
+            if raw.errors:
+                record(
+                    AuditEvent.PLANNER_INVOKED,
+                    actor=self.agent_id,
+                    task_id=task.task_id,
+                    status="FAILED",
+                    detail=f"planner_errors:{len(raw.errors)}",
+                )
+            else:
+                record(
+                    AuditEvent.PLANNER_INVOKED,
+                    actor=self.agent_id,
+                    task_id=task.task_id,
+                    status="SUCCESS",
+                    detail=f"proposed_actions={len(raw.proposed_actions)}",
+                )
         return raw

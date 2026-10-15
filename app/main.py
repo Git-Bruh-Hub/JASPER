@@ -326,6 +326,7 @@ async def main():
         except Exception as exc:
             log.exception("Request failed")
             print(f"JASPER: I couldn't complete that request: {exc}\n")
+            jasper.reset_coordinator()
 
 
 if __name__ == "__main__":

@@ -53,6 +53,7 @@ from app.agents.retry import (
 )
 from app.core.approval import ApprovalGate, ApprovalRequest
 from app.core.audit import AuditEvent, record
+from app.core.response import sanitize_thinking_tags
 from app.core.scoped_permissions import ScopedPermissionManager
 from app.tools.registry import ToolRegistry
 
@@ -194,15 +195,37 @@ class Coordinator:
         self._state = CoordinatorState.IDLE
         self._verification_failures = 0
         self._max_verification_failures = 3
+        self._active_approval_gate: ApprovalGate | None = None
         self.log = logging.getLogger("jasper.coordinator")
 
     # ------------------------------------------------------------------
-    # State machine
+    # State machine and approval properties
     # ------------------------------------------------------------------
 
     @property
     def state(self) -> CoordinatorState:
         return self._state
+
+    @property
+    def active_approval_gate(self) -> ApprovalGate | None:
+        """The currently pending ApprovalGate, or None if no approval is pending."""
+        return self._active_approval_gate
+
+    @property
+    def active_gate_id(self) -> str | None:
+        """Return the gate_id of the currently pending approval gate, or None."""
+        gate = self._active_approval_gate
+        if gate is not None and gate.is_pending:
+            return gate.gate_id
+        return None
+
+    @property
+    def active_approval_request(self) -> ApprovalRequest | None:
+        """Return the currently pending ApprovalRequest, or None."""
+        gate = self._active_approval_gate
+        if gate is not None and gate.is_pending:
+            return gate.request
+        return None
 
     def _transition(self, new_state: CoordinatorState) -> None:
         allowed = _LEGAL_TRANSITIONS.get(self._state, frozenset())
@@ -212,6 +235,88 @@ class Coordinator:
             )
         self.log.debug("state %s → %s", self._state.value, new_state.value)
         self._state = new_state
+
+    def resolve_approval(self, gate_id: str, granted: bool) -> bool:
+        """Resolve the currently pending approval gate by its exact gate_id.
+
+        Thread-safe: May be called from any thread (e.g. the Qt GUI thread).
+        Fails closed: Returns False and has no effect if gate_id does not match
+        the active pending request, if the gate has expired/timed out, if
+        the gate was cancelled, or if the event loop is closed.
+
+        Parameters
+        ----------
+        gate_id:
+            The unique ID of the pending approval request.
+        granted:
+            True to approve the action, False to deny.
+
+        Returns
+        -------
+        bool:
+            True if the pending gate was matched and resolution was successfully scheduled.
+            False if gate_id is unknown, mismatched, stale, expired, cancelled,
+            already resolved, or cannot be resolved.
+        """
+        gate = self._active_approval_gate
+        if gate is None:
+            self.log.warning(
+                "resolve_approval rejected: no active approval gate (gate_id=%s)",
+                gate_id,
+            )
+            return False
+
+        if gate.gate_id != gate_id:
+            self.log.warning(
+                "resolve_approval rejected: gate_id mismatch (active=%s, received=%s)",
+                gate.gate_id, gate_id,
+            )
+            return False
+
+        if not gate.is_pending:
+            self.log.warning(
+                "resolve_approval rejected: gate is not pending (gate_id=%s, resolved=%s, expired=%s, cancelled=%s)",
+                gate_id, gate.is_resolved, gate.is_expired, gate.is_cancelled,
+            )
+            return False
+
+        try:
+            resolved = gate.resolve(granted=granted)
+            if not resolved:
+                self.log.warning(
+                    "resolve_approval rejected: gate.resolve returned False (gate_id=%s)",
+                    gate_id,
+                )
+            return resolved
+        except RuntimeError as exc:
+            self.log.warning(
+                "resolve_approval caught RuntimeError (event loop closed) gate_id=%s: %s",
+                gate_id, exc,
+            )
+            return False
+
+    def reset(self) -> None:
+        """Reset the coordinator from ERROR state back to IDLE.
+
+        Allows a retained coordinator instance to safely recover after a failed
+        run.  Only allowed when in ERROR state (using legal ERROR → IDLE
+        transition) or already in IDLE state (no-op).
+
+        Raises
+        ------
+        RuntimeError
+            If called while a run is active (i.e. state is not IDLE or ERROR).
+        """
+        if self._state == CoordinatorState.IDLE:
+            return
+        if self._state != CoordinatorState.ERROR:
+            raise RuntimeError(
+                f"Cannot reset coordinator while in active state '{self._state.value}'."
+            )
+        self._transition(CoordinatorState.IDLE)
+        self._budget.reset()
+        self._verification_failures = 0
+        self._active_approval_gate = None
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -236,6 +341,7 @@ class Coordinator:
             raise RuntimeError("Coordinator is not in IDLE state; cannot start a new run.")
         self._budget.reset()
         self._verification_failures = 0
+        self._active_approval_gate = None
 
         try:
             return await asyncio.wait_for(
@@ -257,6 +363,7 @@ class Coordinator:
             self._state = CoordinatorState.ERROR
             raise
         finally:
+            self._active_approval_gate = None
             # Always return to IDLE if not already at ERROR
             if self._state not in (CoordinatorState.IDLE, CoordinatorState.ERROR):
                 self._state = CoordinatorState.IDLE
@@ -548,10 +655,12 @@ class Coordinator:
         gate = ApprovalGate(action)
         req = gate.make_request()
 
+        self._active_approval_gate = gate
+        self._transition(CoordinatorState.APPROVING)
+
         if self._approval_notifier:
             self._approval_notifier(req)
 
-        self._transition(CoordinatorState.APPROVING)
         try:
             result = await gate.wait()
         except asyncio.CancelledError:
@@ -563,6 +672,12 @@ class Coordinator:
                 status="CANCELLED",
             )
             raise
+        finally:
+            if self._active_approval_gate is gate:
+                self._active_approval_gate = None
+
+        if result.granted:
+            self._transition(CoordinatorState.ACTING)
 
         return result.granted
 
@@ -660,4 +775,5 @@ class Coordinator:
                 parts.append(f"[Tool {output['tool']}]: outcome unknown — {output.get('error', '')}")
             else:
                 parts.append(f"[Tool {output['tool']}] failed: {output.get('error', 'unknown error')}")
-        return "\n".join(parts) if parts else ""
+        combined = "\n".join(parts) if parts else ""
+        return sanitize_thinking_tags(combined)

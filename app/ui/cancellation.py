@@ -29,6 +29,11 @@ class AsyncRequestController:
     def is_cancelled(self) -> bool:
         return self._cancel_event.is_set()
 
+    def has_active_request(self) -> bool:
+        """Return True if an asyncio request task is currently registered and not done."""
+        with self._lock:
+            return self._task is not None and not self._task.done()
+
     def cancel(self) -> None:
         """Request cooperative cancellation and cancel the active asyncio task immediately."""
         self._cancel_event.set()
@@ -36,8 +41,11 @@ class AsyncRequestController:
             loop = self._loop
             task = self._task
 
-        if loop is not None and task is not None and not task.done():
-            loop.call_soon_threadsafe(task.cancel)
+        if loop is not None and not loop.is_closed() and task is not None and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
 
     def run(self, awaitable: Awaitable[T]) -> T:
         """Run one request in the current worker thread with cross-thread cancellation."""
@@ -55,7 +63,7 @@ class AsyncRequestController:
         try:
             return loop.run_until_complete(task)
         finally:
-            pending = asyncio.all_tasks(loop)
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
             for pending_task in pending:
                 pending_task.cancel()
 

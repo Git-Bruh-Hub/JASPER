@@ -14,8 +14,10 @@ from app.tools.vision import validate_image_path
 from app.knowledge.hardware import get_cpu_profile, render_cpu_explanation
 from app.vision.manager import VisionManager
 from app.agents import CognitiveRouter, CognitiveMode, CognitiveEngine
+from app.agents.coordinator import CoordinatorState
 from app.agents.multi_agent_coordinator import MultiAgentCoordinator
 from app.agents.adapters import PlannerAdapter, ExecutorAdapter
+from app.core.response import sanitize_thinking_tags
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -271,17 +273,30 @@ class Orchestrator:
         memory,
         vision: VisionManager | None = None,
         multi_agent_coordinator: MultiAgentCoordinator | None = None,
+        planner_callable: Callable | None = None,
+        executor_callable: Callable | None = None,
     ):
         self.registry = registry
         self.permissions = permissions
         self.memory = memory
         self.vision = vision
         self.multi_agent_coordinator = multi_agent_coordinator
+        self.planner_callable = planner_callable
+        self.executor_callable = executor_callable
         self.memory_manager = MemoryManager(memory)
         self.models = ModelRouter()
         self.cognitive_router = CognitiveRouter()
         self.engine = CognitiveEngine(self._run_model_loop)
         self.log = logging.getLogger("jasper.orchestrator")
+
+    def reset_coordinator(self) -> None:
+        """Reset the multi-agent coordinator back to IDLE if currently in ERROR state."""
+        if (
+            self.multi_agent_coordinator is not None
+            and getattr(self.multi_agent_coordinator, "state", None) == CoordinatorState.ERROR
+        ):
+            self.log.info("Resetting multi-agent coordinator from ERROR to IDLE")
+            self.multi_agent_coordinator.reset()
 
     def _tool_schemas(self, user_text: str = "") -> list[dict[str, Any]]:
         """Build tool schemas for the current turn.
@@ -417,10 +432,12 @@ class Orchestrator:
                 # Fail safely without falling back to unrestricted path
                 return "Autonomous mode is not enabled."
             
+            self.reset_coordinator()
+
             clean_text = re.sub(r'(?i)^/auto\s*', '', user_text).strip()
             
-            planner_adapter = PlannerAdapter(self.models, self.registry)
-            executor_adapter = ExecutorAdapter(self.models, self.registry)
+            planner_adapter = self.planner_callable or PlannerAdapter(self.models, self.registry)
+            executor_adapter = self.executor_callable or ExecutorAdapter(self.models, self.registry)
             
             answer = await self.multi_agent_coordinator.run_multi_agent(
                 planner_callable=planner_adapter,
@@ -472,7 +489,7 @@ class Orchestrator:
             tool_calls = message.get("tool_calls") or []
             loop_messages.append(message)
             if not tool_calls:
-                answer = message.get("content", "")
+                answer = sanitize_thinking_tags(message.get("content", ""))
                 self.log.info("chat completed model=%s tool_rounds=%s", model, round_number - 1)
                 return answer
             for call in tool_calls:

@@ -73,6 +73,7 @@ Security invariants (all inherited from Coordinator)
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Coroutine
@@ -185,6 +186,7 @@ class MultiAgentCoordinator(Coordinator):
             )
         self._budget.reset()
         self._verification_failures = 0
+        self._active_approval_gate = None
 
         try:
             return await asyncio.wait_for(
@@ -217,8 +219,86 @@ class MultiAgentCoordinator(Coordinator):
                 self._state = CoordinatorState.ERROR
             raise
         finally:
+            self._active_approval_gate = None
             if self._state not in (CoordinatorState.IDLE, CoordinatorState.ERROR):
                 self._state = CoordinatorState.IDLE
+
+    # ------------------------------------------------------------------
+    # Pre-execution validation gate
+    # ------------------------------------------------------------------
+
+    def _validate_planner_result(self, planner_result: AgentResult, task_id: str) -> None:
+        """Validate Planner output before invoking the Executor.
+
+        Ensures that:
+        1. Planner did not fail with errors.
+        2. All proposed actions reference registered tools in the ToolRegistry.
+        3. All action arguments are valid mappings and can be JSON-serialized.
+        4. Filesystem tool path arguments are present and resolvable.
+
+        Emits a structured terminal AuditEvent (PLANNER_INVOKED, status="FAILED")
+        on validation failure without leaking raw argument payloads.
+
+        Raises
+        ------
+        ValueError
+            If planner output is invalid, malformed, or uncanonicalizable.
+        """
+        def _reject(err_msg: str, safe_detail: str, exc: Exception | None = None) -> None:
+            record(
+                AuditEvent.PLANNER_INVOKED,
+                actor="coordinator",
+                task_id=task_id,
+                status="FAILED",
+                detail=safe_detail,
+            )
+            _LOG.warning("planner output rejected task_id=%s reason=%s", task_id, err_msg)
+            if exc:
+                raise ValueError(err_msg) from exc
+            raise ValueError(err_msg)
+
+        if planner_result.errors:
+            err_msg = f"Planner failed with errors: {'; '.join(planner_result.errors)}"
+            _reject(err_msg, f"planner_errors:{len(planner_result.errors)}")
+
+        for action in planner_result.proposed_actions:
+            if not action.tool_name:
+                err_msg = "Planner proposed an action with empty tool_name"
+                _reject(err_msg, "empty_tool_name")
+
+            try:
+                tool = self._registry.get(action.tool_name)
+            except KeyError as exc:
+                err_msg = f"Planner proposed unregistered tool: '{action.tool_name}'"
+                _reject(err_msg, f"unregistered_tool:{action.tool_name}", exc=exc)
+
+            if not isinstance(action.arguments, dict):
+                err_msg = (
+                    f"Planner proposed an uncanonicalizable action: arguments must be a dict, "
+                    f"got {type(action.arguments).__name__}"
+                )
+                _reject(err_msg, f"arguments_not_dict:{action.tool_name}")
+
+            try:
+                json.dumps(action.arguments, sort_keys=True)
+            except (TypeError, ValueError) as exc:
+                err_msg = f"Planner proposed an uncanonicalizable action: {exc}"
+                _reject(err_msg, f"unserializable_arguments:{action.tool_name}", exc=exc)
+
+            if tool.requires_filesystem:
+                if not tool.path_argument or tool.path_argument not in action.arguments:
+                    err_msg = (
+                        f"Planner proposed an uncanonicalizable action: tool '{tool.name}' "
+                        f"requires filesystem path argument '{tool.path_argument}'"
+                    )
+                    _reject(err_msg, f"missing_path_argument:{tool.name}")
+
+                raw_path = str(action.arguments[tool.path_argument])
+                try:
+                    Path(raw_path).expanduser().resolve()
+                except Exception as exc:
+                    err_msg = f"Planner proposed an uncanonicalizable action: invalid path '{raw_path}': {exc}"
+                    _reject(err_msg, f"invalid_path_argument:{tool.name}", exc=exc)
 
     # ------------------------------------------------------------------
     # Internal multi-agent cycle
@@ -248,9 +328,22 @@ class MultiAgentCoordinator(Coordinator):
             task=task,
             budget=self._budget,
             cancel_callback=cancel_callback,
+            emit_terminal=False,
         )
 
-        # Build the typed handoff (wraps raw AgentResult).
+        # Pre-execution validation gate (invariant: invalid plan never reaches Executor)
+        self._validate_planner_result(planner_result_raw, task.task_id)
+
+        # Emit planner terminal SUCCESS only after validation passes
+        record(
+            AuditEvent.PLANNER_INVOKED,
+            actor="planner",
+            task_id=task.task_id,
+            status="SUCCESS",
+            detail=f"proposed_actions={len(planner_result_raw.proposed_actions)}",
+        )
+
+        # Build the typed handoff (wraps validated raw AgentResult).
         planner_handoff = PlannerResult(
             task_id=task.task_id,
             user_text=user_text,

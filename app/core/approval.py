@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.agents.contracts import ProposedAction
+if TYPE_CHECKING:
+    from app.agents.contracts import ProposedAction
 from app.core.audit import AuditEvent, record
 
 _LOG = logging.getLogger("jasper.approval")
@@ -123,10 +125,47 @@ class ApprovalGate:
         self._future: asyncio.Future[bool] | None = None
         self._expires_at: datetime | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._request: ApprovalRequest | None = None
+        self._resolved: bool = False
+        self._expired: bool = False
+        self._cancelled: bool = False
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API (called from the Coordinator, running on the event loop)
     # ------------------------------------------------------------------
+
+    @property
+    def request(self) -> ApprovalRequest | None:
+        """The ApprovalRequest emitted for this gate, or None if not requested yet."""
+        return self._request
+
+    @property
+    def is_pending(self) -> bool:
+        """True if the gate is currently awaiting user resolution on the event loop."""
+        with self._lock:
+            if self._future is None or self._loop is None:
+                return False
+            if self._resolved or self._expired or self._cancelled:
+                return False
+            if self._loop.is_closed() or self._future.done():
+                return False
+            return True
+
+    @property
+    def is_resolved(self) -> bool:
+        """True if the gate has been resolved."""
+        return self._resolved
+
+    @property
+    def is_expired(self) -> bool:
+        """True if the gate has timed out."""
+        return self._expired
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True if the gate has been cancelled."""
+        return self._cancelled
 
     def make_request(self) -> ApprovalRequest:
         """Build the ``ApprovalRequest`` to send to the UI."""
@@ -143,11 +182,13 @@ class ApprovalGate:
             action_id=self.action.action_id,
             status="PENDING",
         )
-        return ApprovalRequest(
+        req = ApprovalRequest(
             gate_id=self.gate_id,
             action=self.action,
             expires_at=expires,
         )
+        self._request = req
+        return req
 
     async def wait(self) -> ApprovalResult:
         """Await user resolution.
@@ -172,6 +213,8 @@ class ApprovalGate:
                 timeout=self._timeout,
             )
         except asyncio.TimeoutError:
+            with self._lock:
+                self._expired = True
             _LOG.warning("approval gate timed out gate_id=%s", self.gate_id)
             record(
                 AuditEvent.APPROVAL_EXPIRED,
@@ -185,7 +228,13 @@ class ApprovalGate:
                 granted=False,
                 expired=True,
             )
-        # CancelledError propagates upward — Coordinator catches and audits it.
+        except asyncio.CancelledError:
+            with self._lock:
+                self._cancelled = True
+            raise
+
+        with self._lock:
+            self._resolved = True
 
         event = AuditEvent.APPROVAL_GRANTED if granted else AuditEvent.APPROVAL_DENIED
         record(
@@ -205,21 +254,47 @@ class ApprovalGate:
     # Public API (called from Qt GUI thread via signal handler)
     # ------------------------------------------------------------------
 
-    def resolve(self, *, granted: bool) -> None:
+    def resolve(self, *, granted: bool) -> bool:
         """Resolve the gate from any thread (e.g. the Qt GUI thread).
 
         Thread-safe: uses ``loop.call_soon_threadsafe`` to schedule
         ``Future.set_result`` on the event loop without blocking the
         GUI thread.
 
-        Has no effect if the gate was never awaited, already resolved,
-        or the future is done for any other reason.
+        Returns True if resolution was accepted and scheduled; False if
+        the gate is not pending, already resolved, expired, cancelled,
+        or the event loop is closed.
         """
-        if self._loop is None or self._future is None:
-            _LOG.warning("resolve() called before gate was awaited gate_id=%s", self.gate_id)
-            return
-        def _do_resolve():
-            if not self._future.done():
-                self._future.set_result(granted)
+        with self._lock:
+            if self._resolved or self._expired or self._cancelled:
+                return False
 
-        self._loop.call_soon_threadsafe(_do_resolve)
+            if self._loop is None or self._future is None:
+                _LOG.warning("resolve() called before gate was awaited gate_id=%s", self.gate_id)
+                return False
+
+            if self._loop.is_closed():
+                _LOG.warning("resolve() called after event loop was closed gate_id=%s", self.gate_id)
+                return False
+
+            if self._future.done():
+                return False
+
+            self._resolved = True
+
+        def _do_resolve():
+            with self._lock:
+                if self._expired or self._cancelled:
+                    return
+                if not self._future.done():
+                    self._future.set_result(granted)
+
+        try:
+            self._loop.call_soon_threadsafe(_do_resolve)
+            return True
+        except RuntimeError as exc:
+            _LOG.warning(
+                "Failed to schedule resolve on loop for gate_id=%s: %s",
+                self.gate_id, exc,
+            )
+            return False

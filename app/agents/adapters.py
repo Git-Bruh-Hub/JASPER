@@ -20,6 +20,7 @@ from app.agents.contracts import (
     ProposedAction,
 )
 from app.agents.router import CognitiveMode
+from app.core.response import sanitize_thinking_tags
 from app.models.model_router import ModelRouter
 from app.tools.registry import Risk, ToolRegistry
 
@@ -119,10 +120,11 @@ class PlannerAdapter:
         tool_calls = message.get("tool_calls", [])
 
         actions = _parse_llm_actions(tool_calls, self.registry)
+        clean_content = sanitize_thinking_tags(content)
 
         return AgentResult(
             agent_id="planner",
-            observations=[content] if content else [],
+            observations=[clean_content] if clean_content else [],
             proposed_actions=actions,
         )
 
@@ -184,9 +186,10 @@ class ExecutorAdapter:
         tool_calls = message.get("tool_calls", [])
 
         actions = _parse_llm_actions(tool_calls, self.registry)
+        clean_content = sanitize_thinking_tags(content)
 
         return AgentResult(
             agent_id="executor",
-            observations=[content] if content else [],
+            observations=[clean_content] if clean_content else [],
             proposed_actions=actions,
         )
