@@ -199,7 +199,7 @@ def register_desktop_tools(registry: ToolRegistry) -> None:
 def build_desktop_autonomy(
     worker: JasperWorker,
     workspace_root: Path | None = None,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 180.0,
 ) -> MultiAgentCoordinator:
     """Configure and attach MultiAgentCoordinator to JasperWorker for desktop autonomy.
 

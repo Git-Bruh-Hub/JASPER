@@ -198,6 +198,14 @@ class ExecutorAdapter:
         if planner_content:
             messages.append({"role": "assistant", "content": f"Planner thoughts: {planner_content}"})
 
+        # Fast path: If planner proposed 0 actions and there is no disagreement, adopt plan directly
+        if not plan.planner_result.proposed_actions and disagreement is None:
+            return AgentResult(
+                agent_id="executor",
+                observations=list(plan.planner_result.observations),
+                proposed_actions=[],
+            )
+
         if action_descriptions:
             messages.append({
                 "role": "assistant",

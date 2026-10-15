@@ -100,7 +100,7 @@ class CoordinatorBudget:
     max_agent_rounds: int = 12      # total agent invocations
     max_tool_calls: int = 10        # total tool executions
     max_approval_requests: int = 5  # total approval gates opened
-    timeout_seconds: float = 120.0  # wall-clock hard limit
+    timeout_seconds: float = 180.0  # wall-clock hard limit
 
     # Runtime counters (reset on each run)
     _agent_rounds: int = field(default=0, init=False, repr=False)
