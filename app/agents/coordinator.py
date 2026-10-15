@@ -776,6 +776,16 @@ class Coordinator:
                     res_data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
                     if isinstance(res_data, dict) and "path" in res_data:
                         parts.append(f"✅ Successfully wrote `{res_data['path']}` ({res_data.get('bytes_written', 0)} bytes).")
+                    elif isinstance(res_data, dict) and tool_name == "browser_navigate":
+                        parts.append(f"🌐 Navigated to {res_data.get('url')} (Title: '{res_data.get('title', '')}'). Found {res_data.get('interactive_count', 0)} interactive elements.\n\n```\n{res_data.get('snapshot', '')}\n```")
+                    elif isinstance(res_data, dict) and tool_name == "browser_click":
+                        parts.append(f"👆 Clicked {res_data.get('target', '')} (New Title: '{res_data.get('new_title', '')}').")
+                    elif isinstance(res_data, dict) and tool_name == "browser_type":
+                        parts.append(f"✍ Typed into {res_data.get('target', '')}: \"{res_data.get('value', '')}\".")
+                    elif isinstance(res_data, dict) and tool_name == "browser_read_text":
+                        parts.append(f"📖 Page Content ({res_data.get('title', '')}):\n\n{res_data.get('text', '')}")
+                    elif isinstance(res_data, dict) and tool_name == "browser_close":
+                        parts.append("🛑 Closed browser session.")
                     else:
                         parts.append(f"[Tool {tool_name}]: {raw_res}")
                 except Exception:
