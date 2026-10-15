@@ -2,6 +2,8 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
+JASPER_VERSION = "v0.6.1"
+
 load_dotenv()
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
@@ -17,6 +19,16 @@ JASPER_FAST_MODEL = os.getenv("JASPER_FAST_MODEL", "qwen3:8b")
 JASPER_KEEP_ALIVE = os.getenv("JASPER_KEEP_ALIVE", "5m")
 JASPER_THINK = os.getenv("JASPER_THINK", "false").lower() in {"1", "true", "yes", "on"}
 JASPER_MAX_OUTPUT_TOKENS = max(128, int(os.getenv("JASPER_MAX_OUTPUT_TOKENS", "768")))
+
+# Vision is intentionally isolated from the text-model configuration so a future
+# vision provider/model can be changed without affecting normal chat routing.
+JASPER_VISION_MODEL = os.getenv("JASPER_VISION_MODEL", "qwen3-vl:8b")
+JASPER_VISION_KEEP_ALIVE = os.getenv("JASPER_VISION_KEEP_ALIVE", "5m")
+JASPER_VISION_THINK = os.getenv("JASPER_VISION_THINK", "false").lower() in {"1", "true", "yes", "on"}
+JASPER_VISION_MAX_OUTPUT_TOKENS = max(128, int(os.getenv("JASPER_VISION_MAX_OUTPUT_TOKENS", "512")))
+JASPER_VISION_MAX_IMAGE_MB = max(1, int(os.getenv("JASPER_VISION_MAX_IMAGE_MB", "10")))
+JASPER_VISION_EMPTY_RESPONSE_RETRIES = max(0, int(os.getenv("JASPER_VISION_EMPTY_RESPONSE_RETRIES", "1")))
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
 JASPER_MEMORY_ENABLED = os.getenv("JASPER_MEMORY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}

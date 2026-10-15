@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "skills": {
+    "ai-agents-architect": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/ai-research/ai-agents-architect/SKILL.md",
+      "computedHash": "8a5ff990847b2c45503aa4608c6e4586121a6f5461c025790bfe36c52abdb52f"
+    },
+    "autonomous-agent-patterns": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/ai-research/autonomous-agent-patterns/SKILL.md",
+      "computedHash": "d26112fe2895df7d179d7abcbfaf98ae92fabe600e0969f567969d712cb2840c"
+    },
+    "python-pro": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/development/python-pro/SKILL.md",
+      "computedHash": "f6a13595ce45e85d6b7a226c2584ca81a2076940f2ce8cdb2cd1947ae3dcbcba"
+    },
+    "python-testing-patterns": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/development/python-testing-patterns/SKILL.md",
+      "computedHash": "e5811b150c4e47bda3daaf2113e1e4fc38555bbacb7543f4208814ee719ed9f9"
+    },
+    "senior-prompt-engineer": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/development/senior-prompt-engineer/SKILL.md",
+      "computedHash": "64350494e583aa1d3c3b9a8a0623f217bf7cff04a685cea23811dbb7edfa47f6"
+    },
+    "ui-design-system": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/creative-design/ui-design-system/SKILL.md",
+      "computedHash": "df7ee532a89043b7964152ea84a9794d0faefadad255bfb354d9a6997fdd1846"
+    },
+    "ui-ux-pro-max": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/creative-design/ui-ux-pro-max/SKILL.md",
+      "computedHash": "adab776dc60f4f3466185318575abe670981c64b3584368dbb09f985d2ac0965"
+    }
+  }
+}

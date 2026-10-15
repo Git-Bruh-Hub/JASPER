@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import shlex
 
 from app.core.config import (
+    JASPER_VERSION,
     JASPER_PIPER_CONFIG,
     JASPER_PIPER_MODEL,
     JASPER_PIPER_USE_CUDA,
@@ -33,12 +35,18 @@ from app.memory.sqlite_memory import SQLiteMemory
 from app.tools.filesystem import list_directory, read_text_file
 from app.tools.registry import Risk, Tool, ToolRegistry
 from app.tools.system import get_system_info
+from app.tools.vision import validate_image_path
 from app.voice.manager import VoiceManager
 from app.voice.stt import FasterWhisperSTT
 from app.voice.tts import PiperTTS, WindowsSpeechTTS
+from app.vision.manager import VisionManager
+from app.vision.ollama_provider import OllamaVisionProvider
+from app.vision.router import VisionRouter
+from app.agents.multi_agent_coordinator import MultiAgentCoordinator
+from app.core.scoped_permissions import ScopedPermissionManager
 
 
-def build_registry() -> ToolRegistry:
+def build_registry(vision: VisionManager | None = None) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(Tool(
         "get_system_info",
@@ -65,6 +73,8 @@ def build_registry() -> ToolRegistry:
             },
             "required": ["path"],
         },
+        path_argument="path",
+        requires_filesystem=True,
     ))
     registry.register(Tool(
         "read_text_file",
@@ -81,7 +91,49 @@ def build_registry() -> ToolRegistry:
             },
             "required": ["path"],
         },
+        path_argument="path",
+        requires_filesystem=True,
     ))
+    if vision is not None:
+        async def inspect_image(image_path: str, question: str = "") -> dict:
+            """Analyze a local image and return a structured visual observation."""
+            validated = validate_image_path(image_path)
+            prompt = question.strip() or None
+            result = await vision.analyze(validated, prompt) if prompt else await vision.analyze(validated)
+            return {
+                "image_path": str(validated),
+                "observation": result.answer,
+                "model": result.model,
+                "provider": result.provider,
+            }
+
+        registry.register(Tool(
+            "inspect_image",
+            (
+                "Analyze a local image file and describe its visual contents. "
+                "Use this ONLY when the user explicitly provides or confirms a specific "
+                "image file path on their computer. Do not guess or assume image paths. "
+                "This tool is read-only and does not modify the image or filesystem."
+            ),
+            Risk.READ,
+            inspect_image,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Absolute path to a local image file. Supported formats: PNG, JPG, JPEG, WebP.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "What to analyze or look for in the image. If omitted, the image will be described generally.",
+                    },
+                },
+                "required": ["image_path"],
+            },
+            path_argument="image_path",
+            requires_filesystem=True,
+        ))
     return registry
 
 
@@ -126,23 +178,72 @@ def build_voice_manager() -> VoiceManager:
     )
 
 
+def build_vision_manager() -> VisionManager:
+    return VisionManager(VisionRouter(OllamaVisionProvider()))
+
+
 def print_voice_turn(turn_number: int, user_text: str, answer: str) -> None:
     print(f"You (voice {turn_number}): {user_text}")
     print(f"JASPER: {answer}\n")
 
 
+def parse_vision_command(text: str) -> tuple[str, str]:
+    """Parse :vision while preserving quoted Windows paths containing spaces."""
+    remainder = text[len(":vision"):].strip()
+    if not remainder:
+        raise ValueError("Usage: :vision <image-path> <question>")
+
+    try:
+        parts = shlex.split(remainder, posix=False)
+    except ValueError as exc:
+        raise ValueError(f"Invalid :vision command quoting: {exc}") from exc
+
+    if not parts:
+        raise ValueError("Usage: :vision <image-path> <question>")
+
+    image_path = parts[0]
+    if len(parts) == 1:
+        prompt = "Describe the image and mention only visually supported details."
+    else:
+        prompt = " ".join(parts[1:]).strip()
+
+    # shlex with posix=False preserves Windows quoting in a form that may
+    # include the surrounding quotes. Remove only one matching pair.
+    if len(image_path) >= 2 and image_path[0] == image_path[-1] and image_path[0] in {'"', "'"}:
+        image_path = image_path[1:-1]
+
+    return image_path, prompt
+
+
 async def main():
     setup_logging()
     log = logging.getLogger("jasper")
-    jasper = Orchestrator(build_registry(), PermissionManager(), SQLiteMemory())
+    vision = build_vision_manager()
+    registry = build_registry(vision)
+    
+    # v0.7 Multi-Agent setup
+    scoped_permissions = ScopedPermissionManager()
+    multi_agent_coordinator = MultiAgentCoordinator(
+        registry=registry,
+        permissions=scoped_permissions,
+    )
+    
+    jasper = Orchestrator(
+        registry, 
+        PermissionManager(), 
+        SQLiteMemory(),
+        vision=vision,
+        multi_agent_coordinator=multi_agent_coordinator
+    )
     voice = build_voice_manager() if JASPER_VOICE_ENABLED else None
 
-    print("JASPER v0.4.2")
-    print("Tool calling + explicit long-term memory enabled.")
+    print(f"JASPER {JASPER_VERSION}")
+    print("Tool calling + explicit long-term memory + vision foundation enabled.")
     if voice:
         print("Voice enabled. Use ':voice' for one turn, ':conversation' for continuous conversation, or ':speak <text>'.")
     else:
         print("Voice disabled. Set JASPER_VOICE_ENABLED=true to enable it.")
+    print("Vision: use ':vision <image-path> <question>'.")
     print("Desktop workspace: python -m app.desktop")
     print("Type 'exit' to quit.\n")
 
@@ -209,12 +310,23 @@ async def main():
                 print(f"JASPER: TTS failed: {exc}\n")
             continue
 
+        if user_text.lower().startswith(":vision"):
+            try:
+                image_path, prompt = parse_vision_command(user_text)
+                result = await vision.analyze(image_path, prompt)
+                print(f"JASPER Vision ({result.model}): {result.answer}\n")
+            except Exception as exc:
+                log.exception("Vision request failed")
+                print(f"JASPER: Vision request failed: {exc}\n")
+            continue
+
         try:
             answer = await jasper.respond(user_text)
             print(f"JASPER: {answer}\n")
         except Exception as exc:
             log.exception("Request failed")
             print(f"JASPER: I couldn't complete that request: {exc}\n")
+            jasper.reset_coordinator()
 
 
 if __name__ == "__main__":

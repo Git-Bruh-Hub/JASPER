@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import MAX_HISTORY_MESSAGES
@@ -8,7 +10,14 @@ from app.memory.memory_manager import MemoryManager
 from app.models.model_router import ModelRouter
 from app.core.permissions import PermissionManager
 from app.tools.registry import ToolRegistry
+from app.tools.vision import validate_image_path
 from app.knowledge.hardware import get_cpu_profile, render_cpu_explanation
+from app.vision.manager import VisionManager
+from app.agents import CognitiveRouter, CognitiveMode, CognitiveEngine
+from app.agents.coordinator import CoordinatorState
+from app.agents.multi_agent_coordinator import MultiAgentCoordinator
+from app.agents.adapters import PlannerAdapter, ExecutorAdapter
+from app.core.response import sanitize_thinking_tags
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -46,6 +55,13 @@ Tool use:
 - Do not guess information that a tool can directly verify.
 - After receiving tool results, answer using those results.
 - Never claim a tool ran unless its result confirms it.
+
+Vision:
+- You have a read-only image inspection tool.
+- Use it ONLY when the user explicitly mentions an image file path or asks you to look at, describe, or analyze a specific image file on their computer.
+- Do not guess image paths. If the user mentions an image but does not provide a path, ask them for the exact file path.
+- Do not use vision for text-only questions.
+- After receiving visual observations, answer using those observations. Do not add details that are not in the visual observation.
 
 Safety:
 - Never invent filesystem contents or system state.
@@ -86,6 +102,21 @@ SYSTEM_LIVE_CONTEXT = (
 SYSTEM_GROUNDING_TERMS = (
     "explain", "describe", "details", "detailed", "specification", "specifications",
     "about my", "tell me about my", "what can my", "how does my",
+)
+
+_IMAGE_PATH_RE = re.compile(
+    r"""
+    (?:                           # path prefix — at least one of:
+        (?<![A-Za-z])             #   NOT preceded by a letter (isolates drive)
+        [A-Za-z]:[\\\/]           #   Windows drive letter  (C:\, D:/)
+      | \\\\                      #   UNC path              (\\server\...)
+      | (?:^|(?<=\s)|(?<=["']))   #   must follow whitespace, quote, or SOL
+        [~]?\/                    #   Unix-style absolute or home-relative
+    )
+    \S*                           # rest of path (no spaces — may be quoted)
+    \.(?:png|jpe?g|webp)          # image extension
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
@@ -235,16 +266,53 @@ def _response_budget(text: str) -> int:
 
 
 class Orchestrator:
-    def __init__(self, registry: ToolRegistry, permissions: PermissionManager, memory):
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        permissions: PermissionManager,
+        memory,
+        vision: VisionManager | None = None,
+        multi_agent_coordinator: MultiAgentCoordinator | None = None,
+        planner_callable: Callable | None = None,
+        executor_callable: Callable | None = None,
+    ):
         self.registry = registry
         self.permissions = permissions
         self.memory = memory
+        self.vision = vision
+        self.multi_agent_coordinator = multi_agent_coordinator
+        self.planner_callable = planner_callable
+        self.executor_callable = executor_callable
         self.memory_manager = MemoryManager(memory)
         self.models = ModelRouter()
+        self.cognitive_router = CognitiveRouter()
+        self.engine = CognitiveEngine(self._run_model_loop)
         self.log = logging.getLogger("jasper.orchestrator")
 
-    def _tool_schemas(self) -> list[dict[str, Any]]:
-        return [tool.schema() for tool in self.registry.list() if self.permissions.allowed(tool)]
+    def reset_coordinator(self) -> None:
+        """Reset the multi-agent coordinator back to IDLE if currently in ERROR state."""
+        if (
+            self.multi_agent_coordinator is not None
+            and getattr(self.multi_agent_coordinator, "state", None) == CoordinatorState.ERROR
+        ):
+            self.log.info("Resetting multi-agent coordinator from ERROR to IDLE")
+            self.multi_agent_coordinator.reset()
+
+    def _tool_schemas(self, user_text: str = "") -> list[dict[str, Any]]:
+        """Build tool schemas for the current turn.
+
+        ``inspect_image`` is only offered to the model when the user's message
+        contains an explicit local image file path (e.g. ``C:\\photo.png``).
+        Generic mentions of "image", "photo", or "screenshot" without a path
+        do **not** surface the tool, preventing the model from inventing paths.
+        """
+        image_relevant = bool(_IMAGE_PATH_RE.search(user_text))
+        return [
+            tool.schema()
+            for tool in self.registry.list()
+            if self.permissions.allowed(tool)
+            and (tool.name != "inspect_image" or image_relevant)
+        ]
 
     async def _execute_tool_call(self, call: dict[str, Any]) -> str:
         function = call.get("function") or {}
@@ -262,6 +330,8 @@ class Orchestrator:
         self.log.info("tool requested name=%s arguments=%s", name, arguments)
         try:
             result = tool.handler(**arguments)
+            if asyncio.iscoroutine(result):
+                result = await result
             if hasattr(result, "model_dump"):
                 result = result.model_dump()
             return json.dumps(result, ensure_ascii=False, default=str)
@@ -282,7 +352,13 @@ class Orchestrator:
             on_chunk(part)
             await asyncio.sleep(0.035)
 
-    async def respond(self, user_text: str, on_chunk: Callable[[str], None] | None = None) -> str:
+    async def respond(
+        self,
+        user_text: str,
+        on_chunk: Callable[[str], None] | None = None,
+        image_path: str | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> str:
         self.memory.add("user", user_text)
         memory_command = self.memory_manager.parse_command(user_text)
         if memory_command is not None:
@@ -310,6 +386,24 @@ class Orchestrator:
                 self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
                 return answer
 
+        # --- Vision-to-text bridge (v0.5.2 / hardened) ----------------------
+        # When the user attaches an image, validate and analyze it FIRST.
+        # If validation or analysis fails the exception propagates immediately:
+        # the normal text-LLM is never called and the Worker's error-signal path
+        # displays the failure to the user.  This is intentional — JASPER must
+        # not answer an image question when it cannot see the image.
+        vision_observation: str | None = None
+        if image_path and self.vision:
+            validated = validate_image_path(image_path)
+            result = await self.vision.analyze(validated)
+            vision_observation = result.answer
+            self.log.info(
+                "vision bridge completed path=%s chars=%s",
+                validated.name,
+                len(vision_observation),
+            )
+        # ----------------------------------------------------------------------
+
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
@@ -319,21 +413,83 @@ class Orchestrator:
             info = _system_observation_tool_result(self.registry, self.permissions)
             messages.append({"role": "system", "content": _grounding_context(user_text, info)})
             self.log.info("added live system grounding for hardware explanation")
-        provider, model = self.models.provider_for(user_text)
-        tools = self._tool_schemas()
+        if vision_observation:
+            filename = Path(image_path).name if image_path else "attached image"
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"VISION OBSERVATION for the image the user attached "
+                    f"({filename}):\n\n{vision_observation}\n\n"
+                    "Use only the above visual observations when answering questions "
+                    "about the attached image. Do not add details not present in the "
+                    "observation."
+                ),
+            })
+        mode = self.cognitive_router.route(user_text)
+
+        if mode == CognitiveMode.AUTONOMOUS:
+            if not self.multi_agent_coordinator:
+                # Fail safely without falling back to unrestricted path
+                return "Autonomous mode is not enabled."
+            
+            self.reset_coordinator()
+
+            clean_text = re.sub(r'(?i)^/auto\s*', '', user_text).strip()
+            
+            planner_adapter = self.planner_callable or PlannerAdapter(self.models, self.registry)
+            executor_adapter = self.executor_callable or ExecutorAdapter(self.models, self.registry)
+            
+            answer = await self.multi_agent_coordinator.run_multi_agent(
+                planner_callable=planner_adapter,
+                executor_callable=executor_adapter,
+                user_text=clean_text,
+                cancel_callback=cancel_callback,
+            )
+            self.memory.add("assistant", answer)
+            await self._emit_local_response(answer, on_chunk)
+            return answer
+
+        answer = await self.engine.run(mode, messages, user_text, on_chunk, cancel_callback=cancel_callback)
+
+        self.memory.add("assistant", answer)
+        return answer
+
+    async def _run_model_loop(self, messages: list[dict[str, Any]], system_prompt: str | None, use_tools: bool, mode: CognitiveMode, user_text: str, on_chunk: Callable[[str], None] | None = None, cancel_callback: Callable[[], bool] | None = None) -> str:
+        provider, model = self.models.provider_for(mode)
+
+        # Augment system prompt if provided
+        loop_messages = list(messages)
+        if system_prompt:
+            # Append role prompt to core JASPER prompt
+            if loop_messages and loop_messages[0]["role"] == "system":
+                loop_messages[0] = {
+                    "role": "system",
+                    "content": f"{loop_messages[0]['content']}\n\n{system_prompt}"
+                }
+            else:
+                loop_messages.insert(0, {"role": "system", "content": system_prompt})
+
+        tools = self._tool_schemas(user_text) if use_tools else []
         max_output_tokens = _response_budget(user_text)
         self.log.info("response budget=%s tokens", max_output_tokens)
+
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError()
+
             if on_chunk is None:
-                response = await provider.chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens)
+                response = await provider.chat(loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens, cancel_callback=cancel_callback)
                 message = response.get("message", {})
             else:
-                message, response = await self._stream_model_round(provider, messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk)
+                message, response = await self._stream_model_round(provider, loop_messages, model=model, tools=tools, max_output_tokens=max_output_tokens, on_chunk=on_chunk, cancel_callback=cancel_callback)
+
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError()
+
             tool_calls = message.get("tool_calls") or []
-            messages.append(message)
+            loop_messages.append(message)
             if not tool_calls:
-                answer = message.get("content", "")
-                self.memory.add("assistant", answer)
+                answer = sanitize_thinking_tags(message.get("content", ""))
                 self.log.info("chat completed model=%s tool_rounds=%s", model, round_number - 1)
                 return answer
             for call in tool_calls:
@@ -343,14 +499,14 @@ class Orchestrator:
                 except Exception as exc:
                     self.log.exception("tool request rejected name=%s", name)
                     result = json.dumps({"error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
-                messages.append({"role": "tool", "tool_name": name, "content": result})
+                loop_messages.append({"role": "tool", "tool_name": name, "content": result})
         raise RuntimeError(f"Tool loop exceeded {MAX_TOOL_ROUNDS} rounds; request stopped for safety.")
 
-    async def _stream_model_round(self, provider, messages: list[dict[str, Any]], *, model: str, tools: list[dict[str, Any]], max_output_tokens: int, on_chunk: Callable[[str], None]) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def _stream_model_round(self, provider, messages: list[dict[str, Any]], *, model: str, tools: list[dict[str, Any]], max_output_tokens: int, on_chunk: Callable[[str], None], cancel_callback: Callable[[], bool] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         content_parts: list[str] = []
         final_chunk: dict[str, Any] = {}
         final_tool_calls: list[dict[str, Any]] = []
-        async for chunk in provider.stream_chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens):
+        async for chunk in provider.stream_chat(messages, model=model, tools=tools, max_output_tokens=max_output_tokens, cancel_callback=cancel_callback):
             final_chunk = chunk
             message = chunk.get("message") or {}
             piece = message.get("content") or ""

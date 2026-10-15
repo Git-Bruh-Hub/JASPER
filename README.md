@@ -1,8 +1,8 @@
-# JASPER v0.4.2
+# JASPER (v0.7 Core)
 
 **JASPER = Just Another Smart Program Executing Request**
 
-Local-first personal AI assistant foundation for Windows 11.
+Local-first personal AI assistant foundation for Windows 11. Built on a capability-based security boundary with Ollama inference, explicit memory, PySide6 desktop workspace, multimodal vision, and Hive Mind multi-agent coordination.
 
 ## v0.2 scope
 
@@ -24,7 +24,7 @@ Local-first personal AI assistant foundation for Windows 11.
 - Ollama installed and running
 - A local Ollama model with tool-calling support
 
-Default model: `qwen3:14b`.
+Default text model: `qwen3:14b`.
 
 ## Setup
 
@@ -69,6 +69,62 @@ The CLI remains available for development:
 ```powershell
 python -m app.main
 ```
+
+## v0.6.1 — Vision Foundation & Adaptive Cognition
+
+v0.5 adds a provider-independent local vision layer without giving the vision model permission to control the computer.
+
+Architecture:
+
+```text
+Image file
+   ↓
+VisionManager
+   ↓
+VisionRouter
+   ↓
+VisionProvider
+   ↓
+VisionResult
+   ↓
+Future JASPER Core integration
+```
+
+The first implementation uses Ollama's multimodal `/api/chat` interface and sends image data through the message `images` field. It does not add external cloud vision services, continuous screen monitoring, or computer-control actions.
+
+Current local baseline:
+
+```text
+JASPER_VISION_MODEL=qwen3-vl:8b
+JASPER_VISION_MAX_OUTPUT_TOKENS=512
+JASPER_VISION_MAX_IMAGE_MB=10
+```
+
+Install the vision model separately:
+
+```powershell
+ollama pull qwen3-vl:8b
+```
+
+The CLI can test the foundation before the desktop Vision workspace is wired in:
+
+```text
+:vision <image-path> <question>
+```
+
+Example:
+
+```text
+:vision C:\Users\Name\Pictures\test.png What is in this image?
+```
+
+Safety boundary for v0.6.1:
+
+- Image files are read-only inputs.
+- Vision analysis does not click, type, delete, execute commands, or modify the machine.
+- Continuous screen watching is not enabled.
+- Visual observations are kept separate from verified system facts.
+- Provider/model choice is configurable rather than hard-coded into JASPER Core.
 
 ## v0.2.2 — Hardware & Runtime Awareness
 
@@ -136,8 +192,31 @@ JASPER_STT_LANGUAGE=ms
 JASPER_STT_BEAM_SIZE=5
 ```
 
-The desktop interface is the new main application shell. Vision, richer task management, adaptive multi-agent cognition, web research, and automation can now be added behind the existing navigation instead of requiring a future GUI rewrite.
+The desktop interface is the main application shell. Vision, richer task management, adaptive multi-agent cognition, web research, and automation can be added behind the existing navigation instead of requiring a future GUI rewrite.
 
 ## Safety boundary
 
 JASPER still uses a read-only permission layer. The current tool set has no arbitrary shell, delete-file, registry, admin, or destructive tool.
+
+## v0.7 — Hive Mind Multi-Agent Architecture, Desktop Approval & Live Harness Verification
+
+The repository implements the v0.7 Hive Mind multi-agent architecture (Slices 1–7), desktop approval integration, and controlled live-model verification (Steps 7–18B):
+- Typed contracts (`app/agents/contracts.py`).
+- Capability-based `ScopedPermissionManager` with workspace boundary containment.
+- Asynchronous `ApprovalGate` and thread-safe resolution API (`Coordinator.resolve_approval`).
+- Guarded `Coordinator` recovery (`MultiAgentCoordinator.reset()`) and planner rejection audit events.
+- PySide6 desktop approval presentation bridge (`JasperWorker.approval_requested`) and modal dialog (`ApprovalDialog`) with recursive privacy redaction.
+- Response sanitization (`sanitize_thinking_tags`) stripping model reasoning artifacts.
+- Deterministic end-to-end integration test suite (`tests/test_desktop_approval_e2e.py`).
+- Isolated live-model test harness (`tests/support/live_harness.py`, `tests/test_live_harness_contracts.py`) validated against local Ollama `qwen3:14b`.
+
+> **Security Note:** Desktop autonomous execution (`/auto`) is **disabled by default** in normal desktop startup (`app/desktop.py`) and fails closed unless a coordinator is explicitly injected in a controlled test harness.
+
+For complete architectural and development documentation, see the Project Brain:
+- [PROJECT_STATE.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/PROJECT_STATE.md) — Ground-truth verified project state and tests
+- [ARCHITECTURE.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/ARCHITECTURE.md) — Full system architecture and request flow
+- [PROJECT_VISION.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/PROJECT_VISION.md) — Long-term project vision and safety principles
+- [ROADMAP.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/ROADMAP.md) — Dependency-aware development milestones
+- [DECISIONS.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/DECISIONS.md) — Architecture decision records (ADRs)
+- [AGENTS.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/AGENTS.md) — Mandatory development rules for AI agents
+

@@ -1332,7 +1332,9 @@ fix: clarify v0.7 Slice 5 disagreement boundary
 
 ---
 
-# 26. IMPORTANT CURRENT GIT INTEGRITY ISSUE
+# 26. IMPORTANT CURRENT GIT INTEGRITY ISSUE [RESOLVED]
+
+> **Reconciliation Update (2026-10-12):** This integrity issue has been formally resolved. The missing Slice 5 Coordinator retry integration was committed in commit `5a3a4e2` (`fix: complete Slice 5 Coordinator retry integration`). The notes below are preserved for historical context.
 
 This is critical for the next AI.
 
@@ -1467,9 +1469,11 @@ Correct statement:
 
 ---
 
-# 28. SLICE 7 — NOT COMPLETE
+# 28. SLICE 7 — COMPLETED & HARDENED [HISTORICAL ROADMAP RESOLVED]
 
-Slice 7 is:
+> **Reconciliation Update (2026-10-12):** Slice 7 (Orchestrator Routing & Adapters) was implemented in commit `c8ae534` (`feat: JASPER v0.7 Slice 7 -- Orchestrator Routing & Adapters`) and further hardened in commits `7d3f182` and `a7005d2` (`Harden multi-agent authorization and disagreement checks`). `MultiAgentCoordinator` is wired into `Orchestrator` under `CognitiveMode.AUTONOMOUS`, utilizing `PlannerAdapter` and `ExecutorAdapter` (`app/agents/adapters.py`) which enforce security boundaries by discarding forged LLM claims. The text below records the original planning intent.
+
+Slice 7 was:
 
 > Routing / Migration
 
@@ -1481,9 +1485,7 @@ Planned:
 - incremental migration;
 - semantic disagreement/replanning where justified.
 
-Not completed.
-
-Do not begin Slice 7 until the current Slice 5 Coordinator/Git integrity issue is resolved.
+Status: Completed and passing 18/18 tests in `tests/test_adapters.py` and 2/2 tests in `tests/test_orchestrator_autonomous.py`.
 
 ---
 
@@ -1653,9 +1655,24 @@ because that can duplicate a side effect.
 
 # 34. CURRENT GIT HISTORY
 
-Important recent commits:
+Important recent commits (as of 2026-10-12):
 
 ```text
+a7005d2 (HEAD -> fix/v0.6.1-cancellation, origin/fix/v0.6.1-cancellation)
+Harden multi-agent authorization and disagreement checks
+
+7d3f182
+fix: harden coordinator authorization boundary
+
+c8ae534
+feat: JASPER v0.7 Slice 7 -- Orchestrator Routing & Adapters
+
+79591cb
+Add files via upload
+
+5a3a4e2
+fix: complete Slice 5 Coordinator retry integration
+
 2de2637
 feat: JASPER v0.7 Slice 6 -- Agent Logic: Planner/Executor delegation + DisagreementResolver integration
 
@@ -1707,115 +1724,86 @@ fix/v0.6.1-cancellation
 
 # 35. REPOSITORY STATE AT HANDOVER
 
-The latest known `git status --short` contained:
+Current verified repository state (2026-10-15):
 
 ```text
- M app/agents/coordinator.py
- D graphify-out/.graphify_analysis.json
- M graphify-out/.graphify_root
- M graphify-out/graph.json
- M graphify-out/manifest.json
- ?? docs/
- ?? graphify-out/.graphify_labels.json
- ?? graphify-out/.graphify_python
- ?? graphify-out/GRAPH_REPORT.md
- ?? graphify-out/cost.json
- ?? graphify-out/temp_ast.py
- ?? graphify-out/temp_build.py
- ?? graphify-out/temp_cleanup.py
- ?? graphify-out/temp_detect.py
- ?? graphify-out/temp_diag.py
- ?? graphify-out/temp_label.py
- ?? graphify-out/temp_merge.py
- ?? graphify-out/temp_sem.py
- ?? pandoc-3.11-windows-x86_64.msi
- ?? slice5.diff
+Changes not staged for commit:
+  modified:   JASPER.md
+  modified:   README.md
+  modified:   app/agents/adapters.py
+  modified:   app/agents/coordinator.py
+  modified:   app/agents/multi_agent_coordinator.py
+  modified:   app/agents/planner.py
+  modified:   app/core/approval.py
+  modified:   app/core/orchestrator.py
+  modified:   app/main.py
+  modified:   app/ui/cancellation.py
+  modified:   app/ui/main_window.py
+  modified:   app/ui/worker.py
+  deleted:    graphify-out/.graphify_analysis.json
+  modified:   graphify-out/.vocab.txt
+  modified:   graphify-out/graph.json
+  modified:   graphify-out/manifest.json
+  modified:   tests/test_orchestrator_autonomous.py
+  modified:   tests/test_slice6_agent_logic.py
+
+Untracked files:
+  AGENTS.md
+  ARCHITECTURE.md
+  DECISIONS.md
+  PROJECT_STATE.md
+  PROJECT_VISION.md
+  ROADMAP.md
+  app/core/response.py
+  app/ui/approval_dialog.py
+  diff.patch
+  docs/
+  graphify-out/.graphify_labels.json
+  graphify-out/.graphify_python
+  graphify-out/.graphify_uncached.txt
+  graphify-out/GRAPH_REPORT.md
+  graphify-out/cost.json
+  graphify-out/graph.html
+  graphify-out/graphify-out/
+  security-recovery-backup/
+  tests/test_coordinator_approval.py
+  tests/test_desktop_approval_bridge.py
+  tests/test_desktop_approval_dialog.py
+  tests/test_desktop_approval_e2e.py
+  tests/test_desktop_shutdown.py
+  tests/test_response_sanitization.py
 ```
 
-These files must be classified before committing.
+Key uncommitted items to preserve:
+- `tests/test_desktop_approval_e2e.py`: 11 deterministic end-to-end integration tests for desktop approvals.
+- `app/ui/approval_dialog.py`: PySide6 modal approval presentation dialog.
+- `app/core/response.py`: Thinking-tag response sanitization.
+- `tests/test_slice6_agent_logic.py`: Contains local regression test `test_malformed_planner_output_enters_error_without_side_effects` (lines 256–314).
+- `diff.patch`: ~3.0 MB cumulative patch from earlier development.
+- `docs/`: Planning specifications (`1_PRD.md` through `6_Implementation_Plan.md`).
+- `security-recovery-backup/`: 9 empty placeholder backup files from 7/10/2026.
+- `graphify-out/`: Knowledge graph and analysis artifacts.
 
-Likely categories:
-
-```text
-coordinator.py
-→ legitimate Slice 5 source change
-
-docs/
-→ inspect
-
-graphify-out/
-→ distinguish intentional configuration/output from temporary generated artifacts
-
-pandoc MSI
-→ likely unrelated installer artifact; do not automatically commit
-
-slice5.diff
-→ inspect before deciding
-```
-
-Never blindly `git clean -fd`.
+Never run `git reset --hard` or `git clean -fd`. Never use `git add .`.
 
 ---
 
 # 36. CURRENT NEXT STEPS
 
-Do NOT proceed to Slice 7 yet.
-
-First:
+Current focus: **Milestone 3 (Controlled Live-Model Runtime Validation & Independent Readiness Review)**.
 
 ## Step 1
-
-Inspect the Slice 5 Coordinator diff.
-
-Command:
-
-```powershell
-git diff -- app/agents/coordinator.py
-```
+Independent architectural and security audit of the desktop approval boundary and cancellation invariants.
 
 ## Step 2
-
-Check diff quality:
-
-```powershell
-git diff --check
-```
+Controlled live-model runtime smoke test in CLI and desktop harness against local Ollama (`qwen3:14b`) with read-only tools.
 
 ## Step 3
-
-Classify changed files:
-
-```powershell
-git diff --name-only
-```
+Manual visual acceptance of the PySide6 approval dialog on Windows 11.
 
 ## Step 4
+Maintain desktop autonomous mode disabled by default in production (`app/desktop.py`) until explicit user authorization policies are established.
 
-Inspect Git state:
-
-```powershell
-git status --short
-```
-
-## Step 5
-
-Once confirmed, commit the missing Slice 5 Coordinator integration as an atomic change.
-
-## Step 6
-
-Run focused v0.7 tests.
-
-## Step 7
-
-Run the full suite.
-
-## Step 8
-
-Verify Slice 6 still works from a clean tree.
-
-## Step 9
-
-Only then start Slice 7.
 
 ---
 
@@ -2811,67 +2799,94 @@ If another AI remembers nothing else, remember these:
 
 # 56. HOW TO START A NEW AI SESSION
 
-Give the AI this file.
+Give the AI this file and direct it to the Project Brain:
+- `PROJECT_STATE.md` (Ground truth state and tests)
+- `ARCHITECTURE.md` (System flows and security boundaries)
+- `ROADMAP.md` (Dependency-ordered milestones)
+- `DECISIONS.md` (Architectural decisions ADR-001 through ADR-017)
+- `AGENTS.md` (Binding rules for AI agents)
 
 Then tell it:
 
 ```text
-Read JASPER_MASTER_HANDOVER.md completely before making recommendations.
+Read JASPER.md and the Project Brain completely before making recommendations.
 
-Treat it as the current project context.
+Treat them as the authoritative current project context.
 
 Do not invent missing historical facts.
 
-Respect the command rule:
-"Run this command on your side:"
-
 Use .\.venv\Scripts\python.exe for all JASPER Python/test commands.
 
-Do not blindly revert uncommitted changes.
+Do not blindly revert uncommitted changes. Preserve all untracked artifacts.
 
 Act as architecture/reliability/security reviewer unless I explicitly ask you to implement something.
 
-Before modifying architecture, inspect the current state and make a plan.
+Before modifying code or architecture, inspect the current state and make a plan.
 
-The current known blocker is the uncommitted Slice 5 Coordinator integration. Resolve repository integrity before proceeding to Slice 7.
+The repository foundation is at Milestone 3 complete (Steps 7–18B: guarded recovery, thinking tag sanitization, approval gate lifecycle, PySide6 approval dialog, recursive privacy redaction, isolated live harness, and live Ollama qwen3:14b smoke tests). 465 tests pass.
+
+Autonomous mode remains strictly disabled by default in production desktop configuration. The recommended next milestone is Milestone 4: Git Working-Tree & Release Tag Consolidation.
 ```
 
 ---
 
-# 57. HANDOVER UPDATE TEMPLATE
+# 57. HANDOVER UPDATE (2026-10-15)
 
-When updating this file after a milestone, add:
-
-```text
 ## Latest Update
 
-Date:
-Version:
-Branch:
+Date: 2026-10-15
+Version: v0.7.3 (Milestones 2.1 & 3 Complete)
+Branch: fix/v0.6.1-cancellation (HEAD: a7005d2)
 
-### Completed
-- ...
+### Completed (Steps 7–18B)
+- **Guarded Coordinator Recovery (Steps 7–8):** Implemented `MultiAgentCoordinator.reset()` transitioning from `ERROR` back to `IDLE` with cleared gates; added `PLANNER_REJECTION` audit events.
+- **Response Sanitization (Step 9):** Implemented `sanitize_thinking_tags` in `app/core/response.py` cleanly stripping `<think>` tags and reasoning artifacts while preserving legitimate text.
+- **Thread-Safe Approval API (Steps 11–12):** Added `Coordinator.resolve_approval(gate_id, granted)` with validation, timeout cancellation, and `APPROVAL_GRANTED`/`APPROVAL_DENIED` audit events.
+- **Desktop Window Shutdown Hardening (Step 13):** Hardened `MainWindow.closeEvent` to dismiss active approvals without granting access, cooperatively cancel requests, and terminate worker threads within 3000ms.
+- **Desktop Approval Signal Bridge (Step 14A):** Added `JasperWorker.approval_requested` Qt Signal and `JasperWorker.resolve_approval` Slot; fails closed when coordinator is unconfigured.
+- **Desktop Approval Dialog (Step 14B):** Created `ApprovalDialog` modal UI in PySide6 displaying tool name, parameters, risk, and rationale with explicit Allow / Deny and Esc rejection.
+- **Controlled E2E Approval Verification (Step 15):** Added 11 deterministic end-to-end tests (`tests/test_desktop_approval_e2e.py`) exercising the complete Qt GUI request → coordinator proposal → approval dialog → resolution → tool invocation lifecycle using test-injected callables.
+- **Project Brain Reconciliation (Step 16):** Fully reconciled `PROJECT_STATE.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `DECISIONS.md`, and `JASPER.md`.
+- **Approval Dialog Privacy Hardening (Steps 17A–17C):** Audited presentation layer; implemented recursive sanitization in `app/ui/approval_dialog.py` protecting nested dicts and lists from credential exposure (`token`, `secret`, `password`, `key`, `credential`, `auth`, `bearer`); added 9 privacy unit tests.
+- **Isolated Live-Model Harness (Step 18A):** Built standalone `tests/support/live_harness.py` with scratch `ToolRegistry` (scoped to `get_system_info` for read-only and `mock_safe_action` for approval) and 8 deterministic contract tests (`tests/test_live_harness_contracts.py`).
+- **Sequential Live Smoke Tests (Step 18B):**
+  - **Test A (Read-Only):** Model called `get_system_info` without write tools; reported OS/CPU accurately; 0 mock calls.
+  - **Test B (Approval Allow):** Model called `mock_safe_action`; surfaced approval and resolved `granted=True`; executed mock handler post-approval (call count 1); returned `IDLE`.
+  - **Test C (Approval Deny):** Model called `mock_safe_action`; surfaced approval and resolved `granted=False`; blocked handler execution (call count 0); halted safely in `ERROR`.
 
 ### Tests
-- ...
+- Full test suite: **465 passed, 0 failed in 55.64s** (`.\.venv\Scripts\python.exe -m pytest tests -q`).
+- Live harness contract tests: **8 passed in 2.03s** (`tests/test_live_harness_contracts.py`).
+- Desktop Approval E2E suite: **11 passed in 16.93s** (`tests/test_desktop_approval_e2e.py`).
+- Desktop Approval Dialog suite: **13 passed** (`tests/test_desktop_approval_dialog.py`).
 
-### Runtime validation
-- ...
+### Runtime Validation & Security Boundary
+- Autonomous mode remains **disabled by default** in production desktop startup (`app/desktop.py` leaves `coordinator=None` and `multi_agent_coordinator=None`). Normal desktop `/auto` requests safely return `"Autonomous mode is not enabled."`.
+- Standard chat requests bypass the multi-agent coordinator entirely.
+- Live-model testing in Step 18B used an isolated scratch registry with strictly in-memory mocks; production tools and live filesystem write capabilities were not exposed.
 
-### Git commits
-- ...
+### Git Status
+- Working branch: `fix/v0.6.1-cancellation` (HEAD: `a7005d2`).
+- No commits or branch switches performed.
+- All untracked artifacts (`diff.patch`, `security-recovery-backup/`, `graphify-out/`, `docs/`, `tests/support/`, new test suites) preserved intact.
 
-### Open issues
-- ...
+### Next Task
+- **Milestone 4 (Recommended Next):** Git Working-Tree & Release Tag Consolidation.
+  1. Review working-tree status (16 modified files, 18 untracked artifacts).
+  2. Organize changes into clean, atomic commits with user authorization.
+  3. Create milestone release tag (e.g. `v0.7.2` or `v0.7.3`).
+  4. Align branch naming and remote tracking.
 
-### Next task
-- ...
-
-### Important architectural decisions
-- ...
-```
-
-This allows future chats to resume without reconstructing the entire conversation.
+### Important Architectural Decisions
+- ADR-012: Guarded Coordinator Recovery and Planner Rejection Audit
+- ADR-013: Post-Generation Thinking-Tag Response Sanitization
+- ADR-014: Thread-Safe Approval Gate Resolution API
+- ADR-015: Cooperative Desktop Cancellation and Window Shutdown Hardening
+- ADR-016: Qt Signal Bridge and Modal Presentation for Desktop Approvals
+- ADR-017: Test-Only Dependency Injection for Autonomous Execution Verification
+- ADR-018: Controlled Live-Model Runtime Validation & Independent Readiness Review
+- ADR-019: Recursive Argument Redaction for Desktop Approval Presentation
+- ADR-020: Isolated Test Harness with Dedicated Scratch Registry for Live Validation
 
 ---
 
@@ -2902,81 +2917,46 @@ v0.6.1
 COMPLETED — CANCELLATION / RELIABILITY
 
 v0.7
-IN PROGRESS — HIVE MIND
+COMPLETED & HARDENED — HIVE MIND (Slices 1–7)
 
-v0.7 Slice 1
-COMPLETED
+v0.7.1
+COMPLETED — PROJECT BRAIN BOOTSTRAP & TEST RECONCILIATION
 
-v0.7 Slice 2
-COMPLETED
+v0.7.2 (Steps 7–16)
+COMPLETED — DESKTOP APPROVAL BRIDGE, MODAL DIALOG & CONTROLLED E2E VERIFICATION
 
-v0.7 Slice 3
-COMPLETED
+v0.7.3 (Steps 17–18B / Milestone 3)
+COMPLETED — PRIVACY HARDENING, ISOLATED LIVE HARNESS & LIVE OLLAMA SMOKE TESTS
 
-v0.7 Slice 4
-COMPLETED
-
-v0.7 Slice 5
-IMPLEMENTED
-BUT COORDINATOR INTEGRATION NEEDS GIT RECONCILIATION
-
-v0.7 Slice 6
-IMPLEMENTED / TESTED
-
-v0.7 Slice 7
-NOT STARTED / NOT COMPLETE
+v0.7.4 (Milestone 4)
+PROPOSED — GIT WORKING-TREE & RELEASE TAG CONSOLIDATION
 
 v0.8
-PLANNED
+PLANNED — BOUNDED CONTROLLED TOOL EXPANSION (FILESYSTEM & WEB)
 
 v0.9
-PLANNED
+PLANNED — DAILY DRIVER DESKTOP & PROACTIVE ASSISTANCE
 
 v1.0
-LONG-TERM TARGET
+LONG-TERM TARGET — PERSONAL INTELLIGENCE & COMPANION INTEGRATION
 ```
 
 ---
 
 # 59. MOST IMPORTANT CURRENT ACTION
 
-Do not proceed to Slice 7 immediately.
-
-First resolve:
+Current action is:
 
 ```text
-Slice 5 Coordinator implementation
+Milestone 4: Git Working-Tree & Release Tag Consolidation
 ```
 
-because:
+Key objectives:
+1. Review the current working-tree diff and untracked artifacts with the user.
+2. Group changes into clean, atomic commits (Core Multi-Agent Hardening, Desktop Approval Bridge & Dialog, Live Harness & Contracts, Documentation).
+3. Create a clean release tag (`v0.7.2` or `v0.7.3`) on an appropriate branch.
+4. Keep desktop autonomous mode disabled by default in production configuration.
 
-```text
-0884a2e
-```
-
-does not contain it, while the working tree does.
-
-The correct sequence is:
-
-```text
-Inspect coordinator.py
- ↓
-Verify intended Slice 5 logic
- ↓
-Classify generated/unrelated files
- ↓
-Commit Slice 5 Coordinator integration
- ↓
-Clean working tree
- ↓
-Run v0.7 tests
- ↓
-Run full suite
- ↓
-Verify Slice 6 from clean HEAD
- ↓
-Then begin Slice 7
-```
 
 ---
 
