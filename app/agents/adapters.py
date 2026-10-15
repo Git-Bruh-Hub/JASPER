@@ -60,6 +60,15 @@ def _parse_llm_actions(
 
         # Derive operation from tool name and resource scope from args if present
         operation = name
+
+        # Normalize arguments according to tool schema (e.g. integer parameters)
+        param_props = tool.parameters.get("properties", {}) if isinstance(tool.parameters, dict) else {}
+        for param_name, param_schema in param_props.items():
+            if param_name in args and param_schema.get("type") == "integer":
+                try:
+                    args[param_name] = int(args[param_name])
+                except (ValueError, TypeError):
+                    pass
         
         # Attempt to infer a resource scope from common argument names, default to "global"
         resource_scope = args.get("path") or args.get("url") or args.get("key") or "global"
@@ -148,11 +157,24 @@ class ExecutorAdapter:
         disagreement: DisagreementFeedback | None = None,
         cancel_callback: Callable[[], bool] | None = None,
     ) -> AgentResult:
+        planner_actions = plan.planner_result.proposed_actions
+        action_descriptions = [
+            f"- `{a.tool_name}` with arguments `{json.dumps(a.arguments)}`"
+            for a in planner_actions
+        ]
+
         system_prompt = (
             "You are the JASPER Executor agent.\n"
             "Execute the user's request strictly following the Planner's proposed tools.\n"
             "You must output valid tool calls."
         )
+
+        if action_descriptions:
+            system_prompt += (
+                f"\n\nThe Planner evaluated the current state and decided on the following planned action(s):\n"
+                + "\n".join(action_descriptions)
+                + "\n\nYou MUST call the exact tool(s) with the exact arguments specified by the Planner above."
+            )
 
         if disagreement:
             excess_details = [
@@ -175,6 +197,16 @@ class ExecutorAdapter:
         planner_content = "\n".join(plan.planner_result.observations)
         if planner_content:
             messages.append({"role": "assistant", "content": f"Planner thoughts: {planner_content}"})
+
+        if action_descriptions:
+            messages.append({
+                "role": "assistant",
+                "content": f"Planned action(s) to execute:\n" + "\n".join(action_descriptions),
+            })
+            messages.append({
+                "role": "user",
+                "content": "Proceed and invoke the exact planned tool call(s) now.",
+            })
 
         tools = [t.schema() for t in self.registry.list()]
         
