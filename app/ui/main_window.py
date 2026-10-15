@@ -13,6 +13,7 @@ from app.ui.approval_dialog import ApprovalDialog
 from app.ui.markdown_renderer import markdown_to_html
 from app.ui.styles import APP_STYLE
 from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
+from app.ui.settings_workspace import SettingsWorkspace
 from app.ui.worker import JasperWorker
 from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
 
@@ -207,8 +208,12 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self._placeholder_page("Tasks"))
         self.vision_page = VisionWorkspace()
         self.page_stack.addWidget(self.vision_page)
-        for _, page_name in self.NAV_ITEMS[3:]:
-            self.page_stack.addWidget(self._placeholder_page(page_name))
+        self.page_stack.addWidget(self._placeholder_page("Agents"))
+        self.page_stack.addWidget(self._placeholder_page("Files"))
+        self.page_stack.addWidget(self._placeholder_page("Web"))
+        self.settings_page = SettingsWorkspace()
+        self.settings_page.settings_saved.connect(self._on_settings_saved)
+        self.page_stack.addWidget(self.settings_page)
 
     def _placeholder_page(self, name: str) -> QWidget:
         page = QWidget()
@@ -305,7 +310,24 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentIndex(index)
         for i, button in enumerate(self.nav_buttons):
             button.setChecked(i == index)
-        self.workspace_hint.setText("Vision workspace" if index == 2 else "Ready" if index == 0 else "Workspace")
+        hints = {
+            0: "Ready",
+            1: "Tasks & Plans",
+            2: "Vision workspace",
+            3: "Agent coordination",
+            4: "File workspace",
+            5: "Web research",
+            6: "Settings & Models",
+        }
+        self.workspace_hint.setText(hints.get(index, "Workspace"))
+        if index == 6 and hasattr(self, "settings_page"):
+            self.settings_page.fetch_ollama_models()
+
+    @Slot(dict)
+    def _on_settings_saved(self, settings: dict) -> None:
+        """Handle settings updates from the Settings workspace."""
+        model_name = settings.get("JASPER_MODEL", "")
+        self.workspace_hint.setText(f"Active model: {model_name}")
 
     @Slot()
     def _on_send_clicked(self) -> None:
