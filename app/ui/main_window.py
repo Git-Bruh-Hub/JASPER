@@ -5,15 +5,35 @@ from html import escape
 
 from PySide6.QtCore import QMimeData, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QDragEnterEvent, QDragLeaveEvent, QDropEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QSystemTrayIcon,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.core.approval import ApprovalRequest
 from app.core.config import JASPER_VOICE_ENABLED
 from app.ui.approval_dialog import ApprovalDialog
 from app.ui.markdown_renderer import markdown_to_html
-from app.ui.styles import APP_STYLE
-from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
+from app.ui.plugins_workspace import PluginsWorkspace
+from app.ui.scheduled_workspace import ScheduledWorkspace
 from app.ui.settings_workspace import SettingsWorkspace
+from app.ui.styles import APP_STYLE
+from app.ui.tasks_workspace import TasksWorkspace
+from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
 from app.ui.worker import JasperWorker
 from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
 
@@ -29,11 +49,11 @@ class MainWindow(QMainWindow):
 
     NAV_ITEMS = (
         ("💬  Chat", "Chat"),
-        ("🧠  Tasks", "Tasks"),
-        ("👁  Vision", "Vision"),
-        ("🤖  Agents", "Agents"),
+        ("⚡  Tasks", "Tasks"),
+        ("🕒  Scheduled", "Scheduled"),
+        ("🧩  Plugins", "Plugins"),
         ("📁  Files", "Files"),
-        ("🌐  Web", "Web"),
+        ("🔀  Git", "Git"),
         ("⚙  Settings", "Settings"),
     )
 
@@ -63,6 +83,8 @@ class MainWindow(QMainWindow):
         self._watch_timer = QTimer(self)
         self._watch_timer.setInterval(4000)
         self._watch_timer.timeout.connect(self._grab_watch_frame)
+        self._ask_for_approval = True
+        self._selected_model = "qwen3:8b"
 
         # Periodic status refresh (every 30 seconds)
         self._status_timer = QTimer(self)
@@ -161,33 +183,39 @@ class MainWindow(QMainWindow):
         self.conversation.setReadOnly(True)
         self.conversation.document().setDefaultStyleSheet("body{margin:0;padding:0;} h1{font-size:20pt;margin:12px 0 8px 0;} h2{font-size:16pt;margin:12px 0 7px 0;} h3{font-size:13pt;margin:10px 0 6px 0;} h4,h5,h6{font-size:11pt;margin:9px 0 5px 0;} p{margin:5px 0;line-height:1.35;} ul,ol{margin-top:5px;margin-bottom:7px;} li{margin:2px 0;} table{border-collapse:collapse;margin:8px 0;} th,td{border:1px solid #454545;padding:6px 9px;} th{background:#242424;font-weight:600;} blockquote{border-left:3px solid #555;padding-left:11px;color:#bdbdbd;margin:8px 0;} code{background:#242424;padding:2px 4px;} pre{background:#101010;border:1px solid #282828;padding:10px;margin:8px 0;} hr{border:0;border-top:1px solid #2b2b2b;margin:12px 0;} a{color:#8ee6a1;}")
         chat_layout.addWidget(self.conversation, 1)
+
         self.thinking_indicator = QLabel("JASPER is working…")
         self.thinking_indicator.setObjectName("thinkingIndicator")
         self.thinking_indicator.hide()
         chat_layout.addWidget(self.thinking_indicator)
+
         composer = QFrame(objectName="composer")
         composer.setAcceptDrops(True)
         composer_layout = QHBoxLayout(composer)
         composer_layout.setContentsMargins(8, 6, 8, 6)
         composer_layout.setSpacing(6)
+
         # --- Attach button (📎) ---
         self.attach_button = QPushButton("📎")
         self.attach_button.setObjectName("micButton")
         self.attach_button.setToolTip("Attach an image (PNG, JPG, WebP)")
         self.attach_button.clicked.connect(self._open_attachment)
         composer_layout.addWidget(self.attach_button)
+
         # --- Screen button (📸) ---
         self.screen_button = QPushButton("📸")
         self.screen_button.setObjectName("micButton")
         self.screen_button.setToolTip("Snip screen region or double-click to capture monitor")
         self.screen_button.clicked.connect(self._on_screen_button_clicked)
         composer_layout.addWidget(self.screen_button)
+
         # --- Watch screen button (👁) ---
         self.watch_button = QPushButton("👁")
         self.watch_button.setObjectName("micButton")
         self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
         self.watch_button.clicked.connect(self._toggle_watch_screen)
         composer_layout.addWidget(self.watch_button)
+
         # --- Image chip (hidden by default) ---
         self.attachment_chip = QFrame(objectName="attachmentChip")
         self.attachment_chip.setContentsMargins(0, 0, 0, 0)
@@ -204,6 +232,7 @@ class MainWindow(QMainWindow):
         chip_layout.addWidget(dismiss_btn)
         self.attachment_chip.hide()
         composer_layout.addWidget(self.attachment_chip)
+
         # --- Text input ---
         self.input = QLineEdit()
         self.input.setObjectName("input")
@@ -211,28 +240,47 @@ class MainWindow(QMainWindow):
         self.input.returnPressed.connect(self._send_text)
         self.input.setAcceptDrops(False)
         composer_layout.addWidget(self.input, 1)
+
         self.mic_button = QPushButton("🎤")
         self.mic_button.setObjectName("micButton")
         self.mic_button.setToolTip("Speak to JASPER")
         self.mic_button.setEnabled(JASPER_VOICE_ENABLED)
         self.mic_button.clicked.connect(self._listen)
         composer_layout.addWidget(self.mic_button)
+
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("sendButton")
         self.send_button.clicked.connect(self._on_send_clicked)
         composer_layout.addWidget(self.send_button)
+
         chat_layout.addWidget(composer)
         self.chat_page.setAcceptDrops(True)
-        self.page_stack.addWidget(self.chat_page)
-        self.page_stack.addWidget(self._placeholder_page("Tasks"))
-        self.vision_page = VisionWorkspace()
-        self.page_stack.addWidget(self.vision_page)
-        self.page_stack.addWidget(self._placeholder_page("Agents"))
-        self.page_stack.addWidget(self._placeholder_page("Files"))
-        self.page_stack.addWidget(self._placeholder_page("Web"))
+
+        # Stack Pages (Total 7 pages)
+        self.page_stack.addWidget(self.chat_page)  # 0: Chat
+
+        self.tasks_page = TasksWorkspace()
+        self.tasks_page.task_started.connect(self._on_task_started)
+        self.page_stack.addWidget(self.tasks_page)  # 1: Tasks
+
+        self.scheduled_page = ScheduledWorkspace()
+        self.scheduled_page.task_triggered.connect(self._on_scheduled_task_triggered)
+        self.page_stack.addWidget(self.scheduled_page)  # 2: Scheduled
+
+        self.plugins_page = PluginsWorkspace()
+        self.plugins_page.use_item_requested.connect(self._on_plugin_use_requested)
+        self.plugins_page.plugin_toggled.connect(self._on_plugin_toggled)
+        self.page_stack.addWidget(self.plugins_page)  # 3: Plugins
+
+        self.page_stack.addWidget(self._placeholder_page("Files"))  # 4: Files
+        self.page_stack.addWidget(self._placeholder_page("Git"))  # 5: Git
+
         self.settings_page = SettingsWorkspace()
         self.settings_page.settings_saved.connect(self._on_settings_saved)
-        self.page_stack.addWidget(self.settings_page)
+        self.page_stack.addWidget(self.settings_page)  # 6: Settings
+
+        # VisionWorkspace preserved as attribute for direct tests and tools
+        self.vision_page = VisionWorkspace()
 
     def _placeholder_page(self, name: str) -> QWidget:
         page = QWidget()
@@ -254,12 +302,11 @@ class MainWindow(QMainWindow):
     def _page_description(name: str) -> str:
         descriptions = {
             "Tasks": "Complex work, progress, and future automation will live here.",
-            "Agents": "Adaptive multi-agent work will appear here when the agent layer is enabled.",
+            "Pull Requests": "Git branch, diff status, and pull request review will live here.",
             "Files": "Safe file browsing and document workflows will be surfaced here.",
-            "Web": "Web research and browsing controls will appear here in a later milestone.",
             "Settings": "Application, model, voice, permissions, and resource settings will live here.",
         }
-        return descriptions[name]
+        return descriptions.get(name, "Workspace details will live here.")
 
     def _build_status_bar(self) -> QFrame:
         frame = QFrame(objectName="statusBar")
@@ -330,17 +377,39 @@ class MainWindow(QMainWindow):
             self.showNormal()
             self.activateWindow()
 
+    @Slot(str)
+    def _on_task_started(self, goal: str) -> None:
+        self._select_page(0)
+        self.input.setText(goal)
+        self._send_text()
+
+    @Slot(str, str)
+    def _on_scheduled_task_triggered(self, title: str, prompt: str) -> None:
+        self._select_page(0)
+        self.input.setText(prompt)
+        self._send_text()
+
+    @Slot(str, str)
+    def _on_plugin_use_requested(self, item_name: str, prompt: str) -> None:
+        self._select_page(0)
+        self.input.setText(prompt)
+        self._send_text()
+
+    @Slot(str, bool)
+    def _on_plugin_toggled(self, plugin_id: str, enabled: bool) -> None:
+        _LOG.info("Plugin %s toggled: %s", plugin_id, enabled)
+
     def _select_page(self, index: int) -> None:
         self.page_stack.setCurrentIndex(index)
         for i, button in enumerate(self.nav_buttons):
             button.setChecked(i == index)
         hints = {
             0: "Ready",
-            1: "Tasks & Plans",
-            2: "Vision workspace",
-            3: "Agent coordination",
+            1: "Autonomous Tasks & Execution",
+            2: "Scheduled Tasks & Monitors",
+            3: "Plugins & Skills Ecosystem",
             4: "File workspace",
-            5: "Web research",
+            5: "Git & Pull Requests",
             6: "Settings & Models",
         }
         self.workspace_hint.setText(hints.get(index, "Workspace"))
@@ -439,6 +508,8 @@ class MainWindow(QMainWindow):
 
     def _grab_watch_frame(self) -> None:
         """Periodically grab virtual desktop across all monitors for watch mode."""
+        if self.busy:
+            return
         try:
             from app.vision.capture import capture_virtual_desktop
             path = capture_virtual_desktop()
@@ -570,7 +641,7 @@ class MainWindow(QMainWindow):
     def _set_status(self, state: str) -> None:
         self.active_status.setText(f"● {state}")
         self.status_state.setText(state)
-        if self.page_stack.currentIndex() != 2:
+        if self.page_stack.currentIndex() == 0:
             self.workspace_hint.setText({"STANDBY": "Ready", "ACTIVE": "Working...", "LISTENING": "Listening...", "SPEAKING": "Speaking..."}.get(state, state.title()))
         if state == "ACTIVE" and not self._streaming_content:
             self._show_thinking("JASPER is working")
@@ -641,10 +712,12 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_finished(self) -> None:
         self._set_busy(False)
+        if hasattr(self, "tasks_page"):
+            self.tasks_page.task_completed()
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
-        if self.page_stack.currentIndex() == 2 and self.vision_page._busy:
+        if hasattr(self, "vision_page") and self.vision_page._busy:
             self.vision_page.show_error(message)
             return
         self._streaming_active = False

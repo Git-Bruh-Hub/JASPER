@@ -146,7 +146,6 @@ QLabel#watchStatus {
     font-size: 8pt;
 }
 
-
 QFrame#activityFrame {
     background: #1d1d1d;
     border: 1px solid #303030;

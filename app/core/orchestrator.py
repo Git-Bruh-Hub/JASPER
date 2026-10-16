@@ -410,7 +410,14 @@ class Orchestrator:
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
-        messages.extend({"role": role, "content": content} for role, content in self.memory.recent(MAX_HISTORY_MESSAGES))
+        recent_history = self.memory.recent(MAX_HISTORY_MESSAGES)
+        if image_path:
+            # Exclude prior visual descriptions so the chat model is not anchored to earlier screens
+            recent_history = [
+                (role, content) for role, content in recent_history
+                if not any(marker in content for marker in ("Your screen shows", "What's on your screen", "What’s on your screen", "live screen (", "CURRENT ATTACHED SCREEN"))
+            ]
+        messages.extend({"role": role, "content": content} for role, content in recent_history)
         if _requires_system_grounding(user_text):
             info = _system_observation_tool_result(self.registry, self.permissions)
             messages.append({"role": "system", "content": _grounding_context(user_text, info)})
