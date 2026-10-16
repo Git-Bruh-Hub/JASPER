@@ -17,3 +17,6 @@ graphify-out/cache/
 workspace/
 pytest-temp/
 test-tmp/
+
+data/captures/*
+!data/captures/.gitkeep

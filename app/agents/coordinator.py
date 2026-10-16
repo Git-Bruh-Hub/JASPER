@@ -832,6 +832,11 @@ class Coordinator:
                         msg = "🛑 Closed browser session."
                         activity_badges.append(msg)
                         fallback_parts.append(msg)
+                    elif tool_name == "desktop_take_screenshot":
+                        img_path = res_data.get("path", "")
+                        msg = f"📸 Captured desktop screen: `{img_path}`"
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
                     else:
                         activity_badges.append(f"🔧 Tool `{tool_name}`: completed")
                         fallback_parts.append(f"[Tool {tool_name}]: {raw_res}")

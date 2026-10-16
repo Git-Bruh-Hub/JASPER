@@ -169,6 +169,12 @@ class MainWindow(QMainWindow):
         self.attach_button.setToolTip("Attach an image (PNG, JPG, WebP)")
         self.attach_button.clicked.connect(self._open_attachment)
         composer_layout.addWidget(self.attach_button)
+        # --- Screen button (📸) ---
+        self.screen_button = QPushButton("📸")
+        self.screen_button.setObjectName("micButton")
+        self.screen_button.setToolTip("See my screen (capture desktop & ask JASPER)")
+        self.screen_button.clicked.connect(self._on_screen_button_clicked)
+        composer_layout.addWidget(self.screen_button)
         # --- Image chip (hidden by default) ---
         self.attachment_chip = QFrame(objectName="attachmentChip")
         self.attachment_chip.setContentsMargins(0, 0, 0, 0)
@@ -330,6 +336,45 @@ class MainWindow(QMainWindow):
         self.workspace_hint.setText(f"Active model: {model_name}")
 
     @Slot()
+    def _on_screen_button_clicked(self) -> None:
+        """Handle click on composer 📸 button."""
+        prompt = self.input.text().strip()
+        self.input.clear()
+        self._capture_screen_and_ask(custom_prompt=prompt)
+
+    def _capture_screen_and_ask(self, custom_prompt: str | None = None) -> None:
+        """Capture the desktop screen and send it to the vision pipeline."""
+        if self.busy:
+            return
+
+        user_prompt = custom_prompt if custom_prompt else "What is on my screen and what is this doing?"
+
+        # Briefly hide window so it doesn't photograph JASPER covering the user's workspace
+        self.hide()
+
+        def do_capture() -> None:
+            try:
+                from app.vision.capture import capture_primary_screen
+                path = capture_primary_screen()
+            except Exception as exc:
+                _LOG.exception("Screen capture failed: %s", exc)
+                self.show()
+                self.activateWindow()
+                self._on_error(f"Failed to capture screen: {exc}")
+                return
+
+            self.show()
+            self.activateWindow()
+
+            # Attach captured screen image and trigger request
+            self._set_attachment(str(path))
+            self.input.setText(user_prompt)
+            self._send_text()
+
+        # 200ms delay gives OS window manager time to repaint the underlying apps
+        QTimer.singleShot(200, do_capture)
+
+    @Slot()
     def _on_send_clicked(self) -> None:
         if self.busy:
             self.worker.cancel_request()
@@ -341,6 +386,14 @@ class MainWindow(QMainWindow):
         text = self.input.text().strip()
         if not text or self.busy:
             return
+
+        # Quick command: /screen [optional query]
+        if text.startswith("/screen"):
+            query = text[7:].strip()
+            self.input.clear()
+            self._capture_screen_and_ask(custom_prompt=query)
+            return
+
         image_path = self._attached_image_path
         display_text = text
         if image_path:

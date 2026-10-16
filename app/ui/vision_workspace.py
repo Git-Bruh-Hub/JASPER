@@ -68,9 +68,15 @@ class VisionWorkspace(QWidget):
         layout.addWidget(self.preview, 1)
 
         controls = QHBoxLayout()
+        controls.setSpacing(8)
         self.open_button = QPushButton("Open Image")
         self.open_button.clicked.connect(self._open_image)
         controls.addWidget(self.open_button)
+
+        self.capture_button = QPushButton("📸 Capture Screen")
+        self.capture_button.setToolTip("Capture desktop screen into Vision workspace")
+        self.capture_button.clicked.connect(self._capture_screen)
+        controls.addWidget(self.capture_button)
 
         self.path_label = QLabel("No image selected")
         self.path_label.setObjectName("workspaceHint")
@@ -198,6 +204,35 @@ class VisionWorkspace(QWidget):
 
         event.acceptProposedAction()
         self.set_image(str(path))
+
+    @Slot()
+    def _capture_screen(self) -> None:
+        """Capture the primary screen and display in Vision workspace."""
+        if self._busy:
+            return
+
+        window = self.window()
+        if window:
+            window.hide()
+
+        def do_capture() -> None:
+            try:
+                from app.vision.capture import capture_primary_screen
+                path = capture_primary_screen()
+            except Exception as exc:
+                if window:
+                    window.show()
+                    window.activateWindow()
+                self.show_error(f"Failed to capture screen: {exc}")
+                return
+
+            if window:
+                window.show()
+                window.activateWindow()
+
+            self.set_image(str(path))
+
+        QTimer.singleShot(200, do_capture)
 
     @Slot()
     def _open_image(self) -> None:

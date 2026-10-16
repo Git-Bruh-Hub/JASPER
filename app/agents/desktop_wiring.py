@@ -195,6 +195,19 @@ def register_desktop_tools(registry: ToolRegistry) -> None:
             requires_filesystem=False,
         ))
 
+    # 8. Desktop Take Screenshot (Risk.READ -> read-only desktop observation)
+    if "desktop_take_screenshot" not in existing_tools:
+        from app.vision.capture import desktop_take_screenshot
+        registry.register(Tool(
+            name="desktop_take_screenshot",
+            description="Capture the user's primary desktop display and return the saved image file path for visual analysis.",
+            risk=Risk.READ,
+            handler=desktop_take_screenshot,
+            parameters={"type": "object", "properties": {}},
+            resource_extractor=lambda _: "desktop://screen",
+            requires_filesystem=False,
+        ))
+
 
 def build_desktop_autonomy(
     worker: JasperWorker,
