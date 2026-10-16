@@ -246,23 +246,13 @@ def _format_system_fact_answer(question: str, info: dict) -> str:
     return "\n".join(sections) if sections else "I inspected the system, but I couldn't map that question to a supported system fact."
 
 
-def _response_budget(text: str) -> int:
-    """Choose a generation budget from the user's requested depth and task type."""
+def _response_budget(text: str) -> int | None:
+    """Dynamic response token budget. Returns None for natural dynamic generation."""
     normalized = " ".join(text.lower().split())
-    hardware_explanation = any(term in normalized for term in ("cpu", "processor", "gpu", "graphics card", "ram", "memory", "storage")) and any(
-        term in normalized for term in ("explain", "describe", "detail", "detailed", "how does", "what does")
-    )
-    if hardware_explanation and not any(term in normalized for term in ("in detail", "thorough", "comprehensive", "step by step", "deep dive")):
-        return 640
-    if any(term in normalized for term in ("in detail", "detailed", "thorough", "deep dive", "comprehensive", "step by step", "explain fully")):
-        return 1024
-    if any(term in normalized for term in ("analyze", "compare", "debug", "design", "plan", "why is", "how can i")):
-        return 1024
-    if any(term in normalized for term in ("recommend", "recommendation", "best", "good for", "which .* should", "what .* should i buy")):
-        return 640
-    if len(normalized.split()) <= 12:
-        return 512
-    return 640
+    if any(term in normalized for term in ("brief", "concise", "short answer", "in one sentence", "in a word")):
+        return 256
+    return None
+
 
 
 class Orchestrator:
@@ -395,8 +385,14 @@ class Orchestrator:
         vision_observation: str | None = None
         if image_path and self.vision:
             validated = validate_image_path(image_path)
-            # Pass the user's specific prompt to the vision model for targeted observations
-            result = await self.vision.analyze(validated, prompt=user_text)
+            # Comprehensive screen / game / window observation prompt
+            vision_prompt = (
+                f"{user_text}\n\n"
+                "Analyze everything visible in this image or screen capture. "
+                "Identify any running games (including title, game modes, and in-game menus), "
+                "active applications, foreground and background windows, text, and what is currently happening."
+            )
+            result = await self.vision.analyze(validated, prompt=vision_prompt)
             vision_observation = result.answer
             self.log.info(
                 "vision bridge completed path=%s chars=%s",
@@ -419,11 +415,13 @@ class Orchestrator:
             messages.append({
                 "role": "system",
                 "content": (
-                    f"VISION OBSERVATION for the image the user attached "
-                    f"({filename}):\n\n{vision_observation}\n\n"
-                    "Use only the above visual observations when answering questions "
-                    "about the attached image. Do not add details not present in the "
-                    "observation."
+                    f"### CURRENT ATTACHED SCREEN / IMAGE (VISION OBSERVATION) ({filename}):\n"
+                    f"{vision_observation}\n\n"
+                    "INSTRUCTIONS:\n"
+                    "- Prioritize this visual observation over past conversational memory.\n"
+                    "- Answer the user's question directly based on what is visually observed.\n"
+                    "- Specifically identify any games, programs, windows, and UI elements reported.\n"
+                    "- Do not add details not present in the observation."
                 ),
             })
         mode = self.cognitive_router.route(user_text)
@@ -474,7 +472,10 @@ class Orchestrator:
 
         tools = self._tool_schemas(user_text) if use_tools else []
         max_output_tokens = _response_budget(user_text)
-        self.log.info("response budget=%s tokens", max_output_tokens)
+        if max_output_tokens is not None:
+            self.log.info("response budget=%s tokens", max_output_tokens)
+        else:
+            self.log.info("response budget=dynamic (unconstrained)")
 
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
             if cancel_callback and cancel_callback():
