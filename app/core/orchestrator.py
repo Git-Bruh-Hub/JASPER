@@ -385,13 +385,18 @@ class Orchestrator:
         vision_observation: str | None = None
         if image_path and self.vision:
             validated = validate_image_path(image_path)
-            # Comprehensive screen / game / window observation prompt
-            vision_prompt = (
-                f"{user_text}\n\n"
-                "Analyze everything visible in this image or screen capture. "
-                "Identify any running games (including title, game modes, and in-game menus), "
-                "active applications, foreground and background windows, text, and what is currently happening."
-            )
+            # Clean, universal screen and image observation prompt
+            if user_text and user_text.strip():
+                vision_prompt = (
+                    f"{user_text.strip()}\n\n"
+                    "Describe everything visible across the entire screen in detail, "
+                    "including all open windows, applications, text, and background."
+                )
+            else:
+                vision_prompt = (
+                    "Read the entire screen and describe everything visible in detail, "
+                    "including all open windows, applications, text, and background."
+                )
             result = await self.vision.analyze(validated, prompt=vision_prompt)
             vision_observation = result.answer
             self.log.info(
@@ -420,7 +425,7 @@ class Orchestrator:
                     "INSTRUCTIONS:\n"
                     "- Prioritize this visual observation over past conversational memory.\n"
                     "- Answer the user's question directly based on what is visually observed.\n"
-                    "- Specifically identify any games, programs, windows, and UI elements reported.\n"
+                    "- Describe all windows, applications, text, and visual content reported.\n"
                     "- Do not add details not present in the observation."
                 ),
             })
