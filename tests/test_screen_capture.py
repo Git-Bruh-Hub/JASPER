@@ -128,13 +128,6 @@ def test_main_window_watch_screen_mode(qapp, tmp_path: Path):
     assert window.watch_button.text() == "👁"
     assert window.watch_status.isHidden()
 
-    # Toggle on
-    window._toggle_watch_screen()
-    assert window._is_watching_screen is True
-    assert window.watch_button.text() == "⏹"
-    assert not window.watch_status.isHidden()
-    assert "WATCHING" in window.watch_status.text()
-
     fake_img = tmp_path / "live_watch.png"
     pixmap = QPixmap(50, 50)
     pixmap.fill()
@@ -143,13 +136,25 @@ def test_main_window_watch_screen_mode(qapp, tmp_path: Path):
     received = []
     window.request_text_with_image.connect(lambda text, path: received.append((text, path)))
 
-    with patch("app.vision.capture.capture_active_screen", return_value=fake_img):
+    with patch("app.vision.capture.capture_virtual_desktop", return_value=fake_img):
+        # Toggle on (proactively triggers live situational analysis)
+        window._toggle_watch_screen()
+        assert window._is_watching_screen is True
+        assert window.watch_button.text() == "⏹"
+        assert not window.watch_status.isHidden()
+        assert "WATCHING" in window.watch_status.text()
+        assert len(received) == 1
+        assert "What is on my screen" in received[0][0]
+
+        # Simulate worker completion to test follow-up query
+        window._set_busy(False)
+
         window.input.setText("What error is this?")
         window._send_text()
 
-    assert len(received) == 1
-    assert received[0][0] == "What error is this?"
-    assert received[0][1] == str(fake_img)
+    assert len(received) == 2
+    assert received[1][0] == "What error is this?"
+    assert received[1][1] == str(fake_img)
 
     # Command: /unwatch
     window.input.setText("/unwatch")
@@ -157,6 +162,12 @@ def test_main_window_watch_screen_mode(qapp, tmp_path: Path):
     assert window._is_watching_screen is False
     assert window.watch_button.text() == "👁"
     assert window.watch_status.isHidden()
+
+
+def test_get_active_desktop_tasks():
+    from app.vision.capture import get_active_desktop_tasks
+    tasks = get_active_desktop_tasks()
+    assert isinstance(tasks, list)
 
 
 def test_vision_workspace_capture_button(qapp, tmp_path: Path):

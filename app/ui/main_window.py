@@ -408,7 +408,7 @@ class MainWindow(QMainWindow):
         else:
             self._stop_watch_screen()
 
-    def _start_watch_screen(self) -> None:
+    def _start_watch_screen(self, proactive: bool = True) -> None:
         self._is_watching_screen = True
         self.watch_button.setText("⏹")
         self.watch_button.setProperty("watching", "true")
@@ -419,6 +419,11 @@ class MainWindow(QMainWindow):
         self.watch_status.show()
         self._grab_watch_frame()
         self._watch_timer.start()
+
+        # Proactive: immediately trigger a live situational analysis
+        if proactive and not self.busy and self._latest_watch_path:
+            self.input.setText("What is on my screen and what is currently happening?")
+            self._send_text()
 
     def _stop_watch_screen(self) -> None:
         self._is_watching_screen = False
@@ -433,10 +438,10 @@ class MainWindow(QMainWindow):
         self._latest_watch_path = None
 
     def _grab_watch_frame(self) -> None:
-        """Periodically grab active monitor in the background for watch mode."""
+        """Periodically grab virtual desktop across all monitors for watch mode."""
         try:
-            from app.vision.capture import capture_active_screen
-            path = capture_active_screen()
+            from app.vision.capture import capture_virtual_desktop
+            path = capture_virtual_desktop()
             self._latest_watch_path = str(path)
         except Exception as exc:
             _LOG.debug("Background watch screen capture failed: %s", exc)
@@ -457,8 +462,7 @@ class MainWindow(QMainWindow):
         # Quick command: /watch
         if text.lower() in ("/watch", "/watchscreen", "watch screen"):
             self.input.clear()
-            self._start_watch_screen()
-            self._append_message("JASPER", "👁 **Screen Watching enabled.** I'll keep track of your active screen as you work. Ask me anything anytime, or click ⏹ (or type `/unwatch`) to stop.")
+            self._start_watch_screen(proactive=True)
             return
 
         # Quick command: /unwatch or /stopwatch

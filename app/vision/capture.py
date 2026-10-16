@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication, QPainter, QPixmap
 
 from app.core.config import DATA_DIR
 
@@ -70,12 +71,27 @@ def capture_active_screen(save_dir: Path | None = None) -> Path:
 
 def capture_virtual_desktop(save_dir: Path | None = None) -> Path:
     """Capture the full virtual desktop spanning all connected monitors."""
+    screens = QGuiApplication.screens()
     primary = QGuiApplication.primaryScreen()
-    if primary is None:
-        raise RuntimeError("No primary display screen detected for capture.")
+    if not screens or primary is None:
+        raise RuntimeError("No display screen detected for capture.")
 
     vgeo = primary.virtualGeometry()
-    pixmap = primary.grabWindow(0, vgeo.x(), vgeo.y(), vgeo.width(), vgeo.height())
+    if len(screens) == 1:
+        pixmap = primary.grabWindow(0)
+    else:
+        # Multi-monitor stitching: draw each display into a unified virtual desktop canvas
+        canvas = QPixmap(vgeo.width(), vgeo.height())
+        canvas.fill(Qt.GlobalColor.black)
+        painter = QPainter(canvas)
+        for s in screens:
+            spix = s.grabWindow(0)
+            if not spix.isNull():
+                sg = s.geometry()
+                painter.drawPixmap(sg.x() - vgeo.x(), sg.y() - vgeo.y(), spix)
+        painter.end()
+        pixmap = canvas
+
     if pixmap.isNull():
         pixmap = primary.grabWindow(0)
     if pixmap.isNull():
@@ -92,6 +108,60 @@ def capture_virtual_desktop(save_dir: Path | None = None) -> Path:
 
     _LOG.info("Virtual desktop captured: %s (%dx%d)", file_path, pixmap.width(), pixmap.height())
     return file_path
+
+
+def get_active_desktop_tasks() -> list[str]:
+    """Return a curated list of active user applications and open windows."""
+    tasks: list[str] = []
+
+    # 1. Try Windows EnumWindows for visible application titles
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        def enum_callback(hwnd, _):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buff = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buff, length + 1)
+                    title = buff.value.strip()
+                    if title and title not in ("Program Manager", "Settings", "Windows Input Experience"):
+                        if title not in tasks:
+                            tasks.append(title)
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
+    except Exception:
+        pass
+
+    # 2. Add high-interest active user processes via psutil
+    try:
+        import psutil
+        IGNORE_PROCS = {
+            "system idle process", "system", "registry", "smss.exe", "csrss.exe", "wininit.exe",
+            "services.exe", "lsass.exe", "svchost.exe", "fontdrvhost.exe", "dwm.exe", "memory compression",
+            "spoolsv.exe", "taskhostw.exe", "explorer.exe", "shellexperiencehost.exe", "searchindexer.exe",
+            "startmenuexperiencehost.exe", "runtimebroker.exe", "ctfmon.exe", "searchhost.exe",
+            "securityhealthservice.exe", "securityhealthsystray.exe", "mpcmdrun.exe", "msmpeng.exe",
+            "conhost.exe", "audiodg.exe", "wlanext.exe", "dashost.exe", "sihost.exe", "smartscreen.exe",
+            "lockapp.exe", "wmiapsrv.exe", "wmiprvse.exe", "dllhost.exe", "textinputhost.exe", "bash.exe",
+        }
+        for proc in psutil.process_iter(["name"]):
+            try:
+                pname = proc.info.get("name")
+                if pname and pname.lower() not in IGNORE_PROCS:
+                    clean_name = pname[:-4] if pname.lower().endswith(".exe") else pname
+                    if clean_name not in tasks and not any(clean_name.lower() in t.lower() for t in tasks):
+                        tasks.append(clean_name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return tasks[:25]
 
 
 def desktop_take_screenshot() -> dict[str, Any]:

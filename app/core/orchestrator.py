@@ -417,15 +417,28 @@ class Orchestrator:
             self.log.info("added live system grounding for hardware explanation")
         if vision_observation:
             filename = Path(image_path).name if image_path else "attached image"
+            active_tasks: list[str] = []
+            try:
+                from app.vision.capture import get_active_desktop_tasks
+                active_tasks = get_active_desktop_tasks()
+            except Exception:
+                pass
+
+            tasks_section = ""
+            if active_tasks:
+                tasks_section = "\nACTIVE SYSTEM APPLICATIONS / RUNNING TASKS:\n- " + "\n- ".join(active_tasks) + "\n"
+
             messages.append({
                 "role": "system",
                 "content": (
                     f"### CURRENT ATTACHED SCREEN / IMAGE (VISION OBSERVATION) ({filename}):\n"
-                    f"{vision_observation}\n\n"
+                    f"{vision_observation}\n"
+                    f"{tasks_section}\n"
                     "INSTRUCTIONS:\n"
                     "- Prioritize this visual observation over past conversational memory.\n"
                     "- Answer the user's question directly based on what is visually observed.\n"
                     "- Describe all windows, applications, text, and visual content reported.\n"
+                    "- Correlate visible screen windows with active/background applications when relevant.\n"
                     "- Do not add details not present in the observation."
                 ),
             })
