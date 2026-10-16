@@ -40,12 +40,67 @@ def capture_primary_screen(save_dir: Path | None = None) -> Path:
     return file_path
 
 
+def capture_active_screen(save_dir: Path | None = None) -> Path:
+    """Capture the screen display where the mouse cursor is located, or primary screen."""
+    from PySide6.QtGui import QCursor
+    pos = QCursor.pos()
+    screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+    if screen is None:
+        raise RuntimeError("No active display screen detected for capture.")
+
+    geo = screen.geometry()
+    pixmap = screen.grabWindow(0, geo.x(), geo.y(), geo.width(), geo.height())
+    if pixmap.isNull():
+        pixmap = screen.grabWindow(0)
+    if pixmap.isNull():
+        raise RuntimeError("Failed to grab window from active screen.")
+
+    target_dir = (save_dir or (DATA_DIR / "captures")).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    file_path = target_dir / f"screen_{timestamp}.png"
+
+    if not pixmap.save(str(file_path), "PNG"):
+        raise RuntimeError(f"Failed to save screen capture image to {file_path}")
+
+    _LOG.info("Active screen (%s) captured successfully: %s (%dx%d)", screen.name(), file_path, pixmap.width(), pixmap.height())
+    return file_path
+
+
+def capture_virtual_desktop(save_dir: Path | None = None) -> Path:
+    """Capture the full virtual desktop spanning all connected monitors."""
+    primary = QGuiApplication.primaryScreen()
+    if primary is None:
+        raise RuntimeError("No primary display screen detected for capture.")
+
+    vgeo = primary.virtualGeometry()
+    pixmap = primary.grabWindow(0, vgeo.x(), vgeo.y(), vgeo.width(), vgeo.height())
+    if pixmap.isNull():
+        pixmap = primary.grabWindow(0)
+    if pixmap.isNull():
+        raise RuntimeError("Failed to grab virtual desktop.")
+
+    target_dir = (save_dir or (DATA_DIR / "captures")).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    file_path = target_dir / f"desktop_{timestamp}.png"
+
+    if not pixmap.save(str(file_path), "PNG"):
+        raise RuntimeError(f"Failed to save virtual desktop capture image to {file_path}")
+
+    _LOG.info("Virtual desktop captured: %s (%dx%d)", file_path, pixmap.width(), pixmap.height())
+    return file_path
+
+
 def desktop_take_screenshot() -> dict[str, Any]:
     """Autonomous tool handler to capture the desktop screen."""
-    path = capture_primary_screen()
+    path = capture_active_screen()
     return {
         "status": "success",
         "action": "desktop_take_screenshot",
         "path": str(path),
         "filename": path.name,
     }
+

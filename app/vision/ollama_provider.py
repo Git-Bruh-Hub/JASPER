@@ -73,7 +73,10 @@ class OllamaVisionProvider(VisionProvider):
             response.raise_for_status()
             data = response.json()
 
-        answer = ((data.get("message") or {}).get("content") or "").strip()
+        msg = data.get("message") or {}
+        content = (msg.get("content") or "").strip()
+        thinking = (msg.get("thinking") or "").strip()
+        answer = content or thinking
         if not answer:
             raise RuntimeError("Vision model returned an empty response.")
 

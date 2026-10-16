@@ -56,6 +56,13 @@ class MainWindow(QMainWindow):
         self._chat_drag_active = False
         self._active_approval_dialog: ApprovalDialog | None = None
         self._active_gate_id: str | None = None
+        self._snipper = None
+        self._pending_snip_prompt: str | None = None
+        self._is_watching_screen = False
+        self._latest_watch_path: str | None = None
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(4000)
+        self._watch_timer.timeout.connect(self._grab_watch_frame)
 
         # Periodic status refresh (every 30 seconds)
         self._status_timer = QTimer(self)
@@ -172,9 +179,15 @@ class MainWindow(QMainWindow):
         # --- Screen button (📸) ---
         self.screen_button = QPushButton("📸")
         self.screen_button.setObjectName("micButton")
-        self.screen_button.setToolTip("See my screen (capture desktop & ask JASPER)")
+        self.screen_button.setToolTip("Snip screen region or double-click to capture monitor")
         self.screen_button.clicked.connect(self._on_screen_button_clicked)
         composer_layout.addWidget(self.screen_button)
+        # --- Watch screen button (👁) ---
+        self.watch_button = QPushButton("👁")
+        self.watch_button.setObjectName("micButton")
+        self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
+        self.watch_button.clicked.connect(self._toggle_watch_screen)
+        composer_layout.addWidget(self.watch_button)
         # --- Image chip (hidden by default) ---
         self.attachment_chip = QFrame(objectName="attachmentChip")
         self.attachment_chip.setContentsMargins(0, 0, 0, 0)
@@ -265,6 +278,11 @@ class MainWindow(QMainWindow):
         self.gpu_status = QLabel("GPU ○")
         self.gpu_status.setProperty("class", "statusChip")
         layout.addWidget(self.gpu_status)
+        self.watch_status = QLabel("")
+        self.watch_status.setObjectName("watchStatus")
+        self.watch_status.setProperty("class", "statusChip")
+        self.watch_status.hide()
+        layout.addWidget(self.watch_status)
         layout.addStretch(1)
         return frame
 
@@ -343,36 +361,85 @@ class MainWindow(QMainWindow):
         self._capture_screen_and_ask(custom_prompt=prompt)
 
     def _capture_screen_and_ask(self, custom_prompt: str | None = None) -> None:
-        """Capture the desktop screen and send it to the vision pipeline."""
+        """Launch interactive screen snipping overlay across all monitors."""
         if self.busy:
             return
 
-        user_prompt = custom_prompt if custom_prompt else "What is on my screen and what is this doing?"
-
-        # Briefly hide window so it doesn't photograph JASPER covering the user's workspace
+        self._pending_snip_prompt = custom_prompt if custom_prompt else "What is on my screen and what is this doing?"
         self.hide()
 
-        def do_capture() -> None:
+        def do_snip() -> None:
             try:
-                from app.vision.capture import capture_primary_screen
-                path = capture_primary_screen()
+                from app.ui.screen_snipper import ScreenSnipper
+                if self._snipper is None:
+                    self._snipper = ScreenSnipper()
+                    self._snipper.snipped.connect(self._on_chat_snipped)
+                    self._snipper.cancelled.connect(self._on_chat_snip_cancelled)
+                self._snipper.start_snip()
             except Exception as exc:
-                _LOG.exception("Screen capture failed: %s", exc)
+                _LOG.exception("Screen snipper launch failed: %s", exc)
                 self.show()
                 self.activateWindow()
-                self._on_error(f"Failed to capture screen: {exc}")
-                return
+                self._on_error(f"Failed to launch screen snipper: {exc}")
 
-            self.show()
-            self.activateWindow()
+        QTimer.singleShot(150, do_snip)
 
-            # Attach captured screen image and trigger request
-            self._set_attachment(str(path))
-            self.input.setText(user_prompt)
-            self._send_text()
+    @Slot(str)
+    def _on_chat_snipped(self, file_path: str) -> None:
+        self.show()
+        self.activateWindow()
+        self._set_attachment(file_path)
+        prompt = getattr(self, "_pending_snip_prompt", None) or "What is on my screen and what is this doing?"
+        self._pending_snip_prompt = None
+        self.input.setText(prompt)
+        self._send_text()
 
-        # 200ms delay gives OS window manager time to repaint the underlying apps
-        QTimer.singleShot(200, do_capture)
+    @Slot()
+    def _on_chat_snip_cancelled(self) -> None:
+        self.show()
+        self.activateWindow()
+        self._pending_snip_prompt = None
+
+    @Slot()
+    def _toggle_watch_screen(self) -> None:
+        """Toggle continuous screen watch mode."""
+        if not self._is_watching_screen:
+            self._start_watch_screen()
+        else:
+            self._stop_watch_screen()
+
+    def _start_watch_screen(self) -> None:
+        self._is_watching_screen = True
+        self.watch_button.setText("⏹")
+        self.watch_button.setProperty("watching", "true")
+        self.watch_button.style().unpolish(self.watch_button)
+        self.watch_button.style().polish(self.watch_button)
+        self.watch_button.setToolTip("Stop Watching Screen (currently watching desktop)")
+        self.watch_status.setText("● WATCHING SCREEN")
+        self.watch_status.show()
+        self._grab_watch_frame()
+        self._watch_timer.start()
+
+    def _stop_watch_screen(self) -> None:
+        self._is_watching_screen = False
+        self._watch_timer.stop()
+        self.watch_button.setText("👁")
+        self.watch_button.setProperty("watching", "false")
+        self.watch_button.style().unpolish(self.watch_button)
+        self.watch_button.style().polish(self.watch_button)
+        self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
+        self.watch_status.setText("")
+        self.watch_status.hide()
+        self._latest_watch_path = None
+
+    def _grab_watch_frame(self) -> None:
+        """Periodically grab active monitor in the background for watch mode."""
+        try:
+            from app.vision.capture import capture_active_screen
+            path = capture_active_screen()
+            self._latest_watch_path = str(path)
+        except Exception as exc:
+            _LOG.debug("Background watch screen capture failed: %s", exc)
 
     @Slot()
     def _on_send_clicked(self) -> None:
@@ -384,21 +451,48 @@ class MainWindow(QMainWindow):
 
     def _send_text(self) -> None:
         text = self.input.text().strip()
-        if not text or self.busy:
+        if not text:
             return
 
-        # Quick command: /screen [optional query]
-        if text.startswith("/screen"):
-            query = text[7:].strip()
+        # Quick command: /watch
+        if text.lower() in ("/watch", "/watchscreen", "watch screen"):
+            self.input.clear()
+            self._start_watch_screen()
+            self._append_message("JASPER", "👁 **Screen Watching enabled.** I'll keep track of your active screen as you work. Ask me anything anytime, or click ⏹ (or type `/unwatch`) to stop.")
+            return
+
+        # Quick command: /unwatch or /stopwatch
+        if text.lower() in ("/unwatch", "/stopwatch", "stop watching"):
+            self.input.clear()
+            self._stop_watch_screen()
+            self._append_message("JASPER", "Screen watching stopped.")
+            return
+
+        if self.busy:
+            return
+
+        # Quick command: /screen or /snip [optional query]
+        if text.startswith("/screen") or text.startswith("/snip"):
+            prefix_len = 7 if text.startswith("/screen") else 5
+            query = text[prefix_len:].strip()
             self.input.clear()
             self._capture_screen_and_ask(custom_prompt=query)
             return
 
         image_path = self._attached_image_path
+        live_watch = False
+        if not image_path and self._is_watching_screen:
+            self._grab_watch_frame()
+            image_path = self._latest_watch_path
+            live_watch = True
+
         display_text = text
         if image_path:
             from pathlib import Path as _Path
-            display_text = f"{text}\n\n📎 {_Path(image_path).name}"
+            if live_watch:
+                display_text = f"{text}\n\n👁 live screen ({_Path(image_path).name})"
+            else:
+                display_text = f"{text}\n\n📎 {_Path(image_path).name}"
         self.worker.begin_request()
         self._append_message("You", display_text)
         self.input.clear()

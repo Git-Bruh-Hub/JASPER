@@ -17,7 +17,13 @@ from app.tools.vision import validate_image_path
 from app.ui.main_window import MainWindow
 from app.ui.vision_workspace import VisionWorkspace
 from app.ui.worker import JasperWorker
-from app.vision.capture import capture_primary_screen, desktop_take_screenshot
+from app.ui.screen_snipper import ScreenSnipper
+from app.vision.capture import (
+    capture_active_screen,
+    capture_primary_screen,
+    capture_virtual_desktop,
+    desktop_take_screenshot,
+)
 
 
 @pytest.fixture(scope="session")
@@ -41,6 +47,18 @@ def test_capture_primary_screen_creates_valid_image(qapp, tmp_path: Path):
     assert validated == saved_path.resolve()
 
 
+def test_capture_active_screen_and_virtual_desktop(qapp, tmp_path: Path):
+    active_path = capture_active_screen(save_dir=tmp_path)
+    assert active_path.exists()
+    assert active_path.stat().st_size > 0
+    assert validate_image_path(str(active_path)) == active_path.resolve()
+
+    virtual_path = capture_virtual_desktop(save_dir=tmp_path)
+    assert virtual_path.exists()
+    assert virtual_path.stat().st_size > 0
+    assert validate_image_path(str(virtual_path)) == virtual_path.resolve()
+
+
 def test_desktop_take_screenshot_tool_handler(qapp, tmp_path: Path):
     with patch("app.vision.capture.DATA_DIR", tmp_path):
         res = desktop_take_screenshot()
@@ -57,6 +75,29 @@ def test_register_desktop_tools_includes_screenshot(qapp):
     assert reg.get("desktop_take_screenshot").risk == Risk.READ
 
 
+def test_screen_snipper_selection_math(qapp):
+    from PySide6.QtCore import QPoint
+    snipper = ScreenSnipper()
+
+    # Forward drag
+    snipper._start_pos = QPoint(100, 150)
+    snipper._current_pos = QPoint(350, 400)
+    rect = snipper._get_selection_rect()
+    assert rect.x() == 100
+    assert rect.y() == 150
+    assert rect.width() == 250
+    assert rect.height() == 250
+
+    # Reverse drag (up-left)
+    snipper._start_pos = QPoint(350, 400)
+    snipper._current_pos = QPoint(100, 150)
+    rev_rect = snipper._get_selection_rect()
+    assert rev_rect.x() == 100
+    assert rev_rect.y() == 150
+    assert rev_rect.width() == 250
+    assert rev_rect.height() == 250
+
+
 def test_main_window_screen_button_and_command_parsing(qapp, tmp_path: Path):
     worker = MagicMock(spec=JasperWorker)
     thread = MagicMock(spec=QThread)
@@ -64,18 +105,58 @@ def test_main_window_screen_button_and_command_parsing(qapp, tmp_path: Path):
 
     assert hasattr(window, "screen_button")
     assert window.screen_button.toolTip() != ""
+    assert hasattr(window, "watch_button")
 
-    fake_img = tmp_path / "screen_mock.png"
+    fake_img = tmp_path / "snip_mock.png"
     pixmap = QPixmap(100, 100)
     pixmap.fill()
     pixmap.save(str(fake_img), "PNG")
 
-    # Test /screen command parsing in _send_text
-    with patch("app.vision.capture.capture_primary_screen", return_value=fake_img):
-        window.input.setText("/screen what is this compiler error?")
+    # Test snipped callback
+    window._on_chat_snipped(str(fake_img))
+    assert window._attached_image_path is None  # cleared upon send
+    assert window.worker.begin_request.called
+
+
+def test_main_window_watch_screen_mode(qapp, tmp_path: Path):
+    worker = MagicMock(spec=JasperWorker)
+    thread = MagicMock(spec=QThread)
+    window = MainWindow(worker, thread)
+
+    # Initial state: not watching
+    assert window._is_watching_screen is False
+    assert window.watch_button.text() == "👁"
+    assert window.watch_status.isHidden()
+
+    # Toggle on
+    window._toggle_watch_screen()
+    assert window._is_watching_screen is True
+    assert window.watch_button.text() == "⏹"
+    assert not window.watch_status.isHidden()
+    assert "WATCHING" in window.watch_status.text()
+
+    fake_img = tmp_path / "live_watch.png"
+    pixmap = QPixmap(50, 50)
+    pixmap.fill()
+    pixmap.save(str(fake_img), "PNG")
+
+    received = []
+    window.request_text_with_image.connect(lambda text, path: received.append((text, path)))
+
+    with patch("app.vision.capture.capture_active_screen", return_value=fake_img):
+        window.input.setText("What error is this?")
         window._send_text()
 
-    assert window.input.text() == ""
+    assert len(received) == 1
+    assert received[0][0] == "What error is this?"
+    assert received[0][1] == str(fake_img)
+
+    # Command: /unwatch
+    window.input.setText("/unwatch")
+    window._send_text()
+    assert window._is_watching_screen is False
+    assert window.watch_button.text() == "👁"
+    assert window.watch_status.isHidden()
 
 
 def test_vision_workspace_capture_button(qapp, tmp_path: Path):
@@ -87,8 +168,7 @@ def test_vision_workspace_capture_button(qapp, tmp_path: Path):
     pixmap.fill()
     pixmap.save(str(fake_img), "PNG")
 
-    with patch("app.vision.capture.capture_primary_screen", return_value=fake_img):
-        vw.set_image(str(fake_img))
-
+    vw._on_snipped(str(fake_img))
     assert vw._image_path == str(fake_img.resolve())
     assert vw.analyze_button.isEnabled()
+

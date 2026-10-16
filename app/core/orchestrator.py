@@ -395,7 +395,8 @@ class Orchestrator:
         vision_observation: str | None = None
         if image_path and self.vision:
             validated = validate_image_path(image_path)
-            result = await self.vision.analyze(validated)
+            # Pass the user's specific prompt to the vision model for targeted observations
+            result = await self.vision.analyze(validated, prompt=user_text)
             vision_observation = result.answer
             self.log.info(
                 "vision bridge completed path=%s chars=%s",

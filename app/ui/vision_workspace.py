@@ -207,7 +207,7 @@ class VisionWorkspace(QWidget):
 
     @Slot()
     def _capture_screen(self) -> None:
-        """Capture the primary screen and display in Vision workspace."""
+        """Launch interactive screen snipping overlay across all monitors."""
         if self._busy:
             return
 
@@ -215,24 +215,37 @@ class VisionWorkspace(QWidget):
         if window:
             window.hide()
 
-        def do_capture() -> None:
+        def do_snip() -> None:
             try:
-                from app.vision.capture import capture_primary_screen
-                path = capture_primary_screen()
+                from app.ui.screen_snipper import ScreenSnipper
+                if not hasattr(self, "_snipper") or self._snipper is None:
+                    self._snipper = ScreenSnipper()
+                    self._snipper.snipped.connect(self._on_snipped)
+                    self._snipper.cancelled.connect(self._on_snip_cancelled)
+                self._snipper.start_snip()
             except Exception as exc:
                 if window:
                     window.show()
                     window.activateWindow()
-                self.show_error(f"Failed to capture screen: {exc}")
-                return
+                self.show_error(f"Failed to launch screen snipper: {exc}")
 
-            if window:
-                window.show()
-                window.activateWindow()
+        QTimer.singleShot(150, do_snip)
 
-            self.set_image(str(path))
+    @Slot(str)
+    def _on_snipped(self, file_path: str) -> None:
+        window = self.window()
+        if window:
+            window.show()
+            window.activateWindow()
+        self.set_image(file_path)
 
-        QTimer.singleShot(200, do_capture)
+    @Slot()
+    def _on_snip_cancelled(self) -> None:
+        window = self.window()
+        if window:
+            window.show()
+            window.activateWindow()
+
 
     @Slot()
     def _open_image(self) -> None:
