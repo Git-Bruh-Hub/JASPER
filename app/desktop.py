@@ -18,6 +18,14 @@ def main() -> int:
     app.setApplicationDisplayName("JASPER")
     app.setQuitOnLastWindowClosed(False)
 
+    from pathlib import Path
+    from PySide6.QtGui import QIcon
+    icon_path = Path("assets/jasper_icon.png")
+    if not icon_path.exists():
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "jasper_icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     thread = QThread()
     worker = JasperWorker()
     build_desktop_autonomy(worker)

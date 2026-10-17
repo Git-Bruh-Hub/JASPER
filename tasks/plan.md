@@ -1,25 +1,38 @@
-# Implementation Plan: Multi-Step Autonomous Web Browsing Loop
+# Implementation Plan: Browser Automation with Multi-Browser & Persistent Profiles
 
 ## User Review Required
 > [!IMPORTANT]
-> The multi-turn loop enables the Planner to run up to 4 consecutive reasoning rounds. Each round executes proposed actions and feeds observations back to the Planner until the Planner finishes with a text answer.
+> This milestone gives JASPER the ability to control system-installed Google Chrome, Microsoft Edge, or bundled Chromium using a persistent user profile directory (`~/.jasper/browser_profile`). This allows login sessions (webmail, cloud dashboards, etc.) to persist across tasks so JASPER can perform real-world tasks like opening email and summarizing messages without repeated logins.
 
 ---
 
 ## Proposed Slices
 
-### Slice 1: Multi-Turn Coordinator Loop & Observation Feedback
-- **Files:** `app/agents/multi_agent_coordinator.py`, `app/agents/adapters.py`
-- **Goal:** Allow `run_multi_agent` to loop across turns (up to `max_rounds=4`). When tools execute, their outputs and DOM snapshots are appended to `task.history` so the Planner sees what happened in the previous turn and decides the next step. Loop stops when Planner returns 0 proposed actions or reaches max rounds.
-
-### Slice 2: Browser Search Result Extraction & Safe Navigation
+### Slice 1: Multi-Browser & Persistent Context Engine
 - **Files:** `app/tools/browser.py`
-- **Goal:** Add helper `browser_search(query: str, engine: str = "duckduckgo")` or ensure `browser_navigate` + `browser_type` leaves page on search results with clean numbered result links (`[1] Link: Title`, `[2] Link: Title`).
+- **Goal:**
+  - Add `BrowserConfig` dataclass supporting `channel` (`"chrome"`, `"msedge"`, `"chromium"`), `user_data_dir`, and `headless` mode.
+  - Switch `BrowserController` to Playwright `launch_persistent_context` pointing to `~/.jasper/browser_profile`.
+  - Add automatic fallback to bundled Chromium if the requested channel (e.g. Chrome or Edge) is not installed on the system.
+  - Implement `browser_summarize(url_or_topic: str)` high-level extractor.
 
-### Slice 3: Integration Tests & Desktop Verification
-- **Files:** `tests/test_multi_turn_autonomy.py`
-- **Goal:** Write unit tests for multi-turn loops, testing:
-  1. A 3-turn plan (Navigate -> Observe -> Click -> Answer).
-  2. Bounded budget termination when max rounds is reached.
-  3. Error recovery if a page fails to load.
-  4. Run full test suite to guarantee 481+ passing tests.
+### Slice 2: Settings Workspace Browser UI Integration
+- **Files:** `app/ui/settings_workspace.py`
+- **Goal:**
+  - Add "Browser & Web Automation" settings card in `SettingsWorkspace`.
+  - Provide dropdown to select Default Browser: `Google Chrome`, `Microsoft Edge`, `Bundled Chromium`.
+  - Display the active persistent profile location with a quick "Open Profile Folder" button.
+  - Persist the selected browser in `config/settings.json`.
+
+### Slice 3: Desktop Tool Wiring & High-Level Task Routing
+- **Files:** `app/agents/desktop_wiring.py`, `app/core/orchestrator.py`
+- **Goal:**
+  - Register `browser_summarize` and update browser tool descriptions for natural language routing.
+  - Ground the model to recognize requests like "open browser and go to my email, summarize the email from 7-eleven" and decompose into navigation, element observation, and extraction.
+
+### Slice 4: Comprehensive Test Suite & Full Regression Verification
+- **Files:** `tests/test_browser_persistent.py`
+- **Goal:**
+  - Test browser configuration, persistent profile directory resolution, channel fallback, and DOM summarization.
+  - Verify settings saving and loading for browser configuration.
+  - Run full test suite (`tests/`) to ensure all 507+ tests pass with zero regressions.

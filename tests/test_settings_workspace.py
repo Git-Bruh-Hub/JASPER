@@ -125,6 +125,51 @@ def test_main_window_settings_tab_integration(qapp):
     window = MainWindow(worker, thread)
 
     assert window.page_stack.count() == 7
-    window._select_page(6)
+    with patch.object(window.settings_page, "fetch_ollama_models") as mock_fetch:
+        window._select_page(6)
+        mock_fetch.assert_called_once()
     assert isinstance(window.page_stack.currentWidget(), SettingsWorkspace)
     assert window.workspace_hint.text() == "Settings & Models"
+
+
+
+def test_settings_workspace_browser_controls(qapp, tmp_path):
+    widget = SettingsWorkspace()
+    assert hasattr(widget, "combo_browser_channel")
+    assert hasattr(widget, "check_browser_headless")
+    assert hasattr(widget, "input_browser_profile")
+
+    # Change browser channel to msedge and headless to True
+    idx = widget.combo_browser_channel.findData("msedge")
+    assert idx >= 0
+    widget.combo_browser_channel.setCurrentIndex(idx)
+    widget.check_browser_headless.setChecked(True)
+
+    fake_env = tmp_path / ".env"
+    with patch.object(cfg, "ROOT", tmp_path):
+        saved = widget.save_settings()
+
+    assert saved["JASPER_BROWSER_CHANNEL"] == "msedge"
+    assert saved["JASPER_BROWSER_HEADLESS"] is True
+    assert cfg.JASPER_BROWSER_CHANNEL == "msedge"
+    assert cfg.JASPER_BROWSER_HEADLESS is True
+
+    env_content = fake_env.read_text(encoding="utf-8")
+    assert "JASPER_BROWSER_CHANNEL=msedge" in env_content
+    assert "JASPER_BROWSER_HEADLESS=true" in env_content
+
+
+def test_settings_workspace_launch_browser_session(qapp):
+    widget = SettingsWorkspace()
+    assert hasattr(widget, "btn_launch_browser")
+    assert widget.btn_launch_browser.text() == "🌐 Launch Browser (Log into Accounts)"
+
+    with patch("threading.Thread") as mock_thread_cls:
+        mock_thread = MagicMock()
+        mock_thread_cls.return_value = mock_thread
+        widget._launch_browser_session()
+
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once()
+        assert "Launching browser" in widget.label_feedback.text()
+

@@ -1,16 +1,21 @@
-# Tasks: Multi-Step Autonomous Web Browsing
+# Tasks: Browser Automation with Multi-Browser & Persistent Profiles
 
-- [x] Task 1: Multi-Turn Coordinator Loop & Observation Feedback
-  - Acceptance: `MultiAgentCoordinator.run_multi_agent` loops while `proposed_actions` are returned and `rounds < max_rounds`. Tool observations are fed back to `PlannerAdapter`.
-  - Verify: Unit test verifying 2-turn and 3-turn fake planner execution terminates cleanly.
-  - Files: `app/agents/multi_agent_coordinator.py`, `app/agents/adapters.py`
-
-- [x] Task 2: Search Result Formatting & Auto-Navigation Helpers
-  - Acceptance: DOM snapshot formatting highlights search result links clearly so the LLM easily identifies article titles.
-  - Verify: Unit test verifying search result elements are tagged and snapshot lists them cleanly.
+- [x] Task 1: Multi-Browser & Persistent Context Engine
+  - Acceptance: `BrowserController` supports `channel` (`chrome`, `msedge`, `chromium`), uses `launch_persistent_context` to retain login cookies/sessions in `~/.jasper/browser_profile`, and falls back safely to bundled Chromium if selected channel is missing.
+  - Verify: Unit test `tests/test_browser_persistent.py` verifying persistent context launch options and channel fallbacks.
   - Files: `app/tools/browser.py`
 
-- [x] Task 3: Test Suite & Realtime End-to-End Verification
-  - Acceptance: Complete test suite passes with zero regressions. End-to-end multi-turn web search test passes.
-  - Verify: `pytest tests/test_multi_turn_autonomy.py -v` and `pytest tests -q`.
-  - Files: `tests/test_multi_turn_autonomy.py`
+- [x] Task 2: Settings Workspace Browser Configuration UI
+  - Acceptance: `SettingsWorkspace` provides a clean UI section allowing user to choose their preferred browser (Chrome, Edge, Chromium) and view profile folder path, saving preference to config.
+  - Verify: Test settings update and emission in UI tests.
+  - Files: `app/ui/settings_workspace.py`
+
+- [x] Task 3: High-Level Web Summarization & Agent Routing
+  - Acceptance: Expose `browser_summarize` tool and wire into `desktop_wiring.py`, enabling natural agent execution of queries like "open browser and summarize the email from 7-eleven".
+  - Verify: Orchestrator and coordinator tool tests.
+  - Files: `app/tools/browser.py`, `app/agents/desktop_wiring.py`
+
+- [x] Task 4: Regression & End-to-End Verification
+  - Acceptance: All new tests in `tests/test_browser_persistent.py` pass and the full repository test suite (512 tests) remains 100% green.
+  - Verify: `.\.venv\Scripts\python.exe -m pytest tests/`
+  - Files: `tests/test_browser_persistent.py`

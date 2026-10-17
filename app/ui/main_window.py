@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
         self._status_timer.start()
 
         self.setWindowTitle("JASPER")
+        self._setup_icon()
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
         self.setStyleSheet(APP_STYLE)
@@ -111,9 +112,22 @@ class MainWindow(QMainWindow):
         top_bar = QFrame(objectName="topBar")
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(18, 12, 18, 12)
+        top_layout.setSpacing(10)
+
+        brand_layout = QHBoxLayout()
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(8)
+
+        if getattr(self, "_app_icon", None) and not self._app_icon.isNull():
+            brand_icon = QLabel()
+            brand_icon.setPixmap(self._app_icon.pixmap(24, 24))
+            brand_icon.setFixedSize(24, 24)
+            brand_layout.addWidget(brand_icon)
+
         brand = QLabel("JASPER")
         brand.setObjectName("brand")
-        top_layout.addWidget(brand)
+        brand_layout.addWidget(brand)
+        top_layout.addLayout(brand_layout)
         top_layout.addStretch(1)
         self.active_status = QLabel("● STANDBY")
         self.active_status.setObjectName("activeStatus")
@@ -351,10 +365,26 @@ class MainWindow(QMainWindow):
         if hasattr(self.worker, "approval_requested"):
             self.worker.approval_requested.connect(self._on_approval_requested)
 
+    def _setup_icon(self) -> None:
+        from pathlib import Path
+        from PySide6.QtGui import QIcon
+
+        icon_path = Path("assets/jasper_icon.png")
+        if not icon_path.exists():
+            icon_path = Path(__file__).resolve().parent.parent.parent / "assets" / "jasper_icon.png"
+
+        if icon_path.exists():
+            self._app_icon = QIcon(str(icon_path))
+            self.setWindowIcon(self._app_icon)
+        else:
+            self._app_icon = None
+
     def _setup_tray(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self._tray = QSystemTrayIcon(self)
+        if getattr(self, "_app_icon", None) and not self._app_icon.isNull():
+            self._tray.setIcon(self._app_icon)
         self._tray.setToolTip("JASPER")
         self._tray.setContextMenu(self._build_tray_menu())
         self._tray.activated.connect(self._tray_activated)

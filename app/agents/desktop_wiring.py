@@ -20,6 +20,7 @@ from app.tools.browser import (
     browser_navigate,
     browser_read_text,
     browser_search,
+    browser_summarize,
     browser_type,
 )
 from app.tools.filesystem import write_text_file
@@ -130,6 +131,31 @@ def register_desktop_tools(registry: ToolRegistry) -> None:
             handler=browser_read_text,
             parameters={"type": "object", "properties": {}},
             resource_extractor=lambda _: "browser://text",
+            requires_filesystem=False,
+        ))
+
+    # 4.5. Browser Summarize (Risk.READ -> read-only web page & topic summarization)
+    if "browser_summarize" not in existing_tools:
+        registry.register(Tool(
+            name="browser_summarize",
+            description="Extract readable content from the active browser or navigate to a URL and summarize information matching a topic or email query (e.g. '7-Eleven receipt', 'order summary', 'flight details').",
+            risk=Risk.READ,
+            handler=browser_summarize,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to first. If omitted, summarizes the currently open web page.",
+                    },
+                    "topic_or_query": {
+                        "type": "string",
+                        "description": "Topic, keywords, or search term to summarize from the page (e.g. '7-eleven', 'receipt', 'order #').",
+                    },
+                },
+                "required": [],
+            },
+            resource_extractor=lambda args: f"browser://summarize?topic={args.get('topic_or_query', '')}&url={args.get('url', '')}",
             requires_filesystem=False,
         ))
 

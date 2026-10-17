@@ -14,14 +14,43 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 _LOG = logging.getLogger("jasper.tools.browser")
 
 
+@dataclass
+class BrowserConfig:
+    """Configuration options for Playwright browser automation."""
+
+    channel: str = "chrome"  # "chrome", "msedge", or "chromium"
+    headless: bool = False
+    user_data_dir: Path | None = None
+    viewport_width: int = 1280
+    viewport_height: int = 800
+    timeout_ms: int = 20000
+
+
 def get_default_headless() -> bool:
     """Return False (headed / visible browser) unless JASPER_BROWSER_HEADLESS=true."""
     return os.environ.get("JASPER_BROWSER_HEADLESS", "false").lower() in ("true", "1", "yes")
+
+
+def get_default_profile_dir() -> Path:
+    """Return the persistent user profile directory for JASPER browser automation."""
+    raw = os.environ.get("JASPER_BROWSER_PROFILE", "")
+    if raw:
+        p = Path(raw).resolve()
+    else:
+        p = (Path.home() / ".jasper" / "browser_profile").resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_default_channel() -> str:
+    """Return default browser channel ('chrome', 'msedge', or 'chromium')."""
+    return os.environ.get("JASPER_BROWSER_CHANNEL", "chrome").lower().strip()
 
 
 @dataclass
@@ -35,16 +64,41 @@ class InteractiveElement:
 
 
 class BrowserController:
-    """Manages an active Playwright browser session for JASPER agents."""
+    """Manages a persistent Playwright browser session for JASPER agents."""
 
-    def __init__(self, headless: bool | None = None) -> None:
-        self.headless = get_default_headless() if headless is None else headless
+    def __init__(
+        self,
+        headless: bool | None = None,
+        config: BrowserConfig | None = None,
+        channel: str | None = None,
+        user_data_dir: Path | str | None = None,
+    ) -> None:
+        if config is not None:
+            self.config = config
+        else:
+            hl = get_default_headless() if headless is None else headless
+            ch = channel or get_default_channel()
+            ud = Path(user_data_dir).resolve() if user_data_dir else get_default_profile_dir()
+            self.config = BrowserConfig(channel=ch, headless=hl, user_data_dir=ud)
+
+        self.headless = self.config.headless
+        self._active_channel: str = self.config.channel
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jasper_browser")
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
         self._page: Any = None
         self._elements: dict[int, InteractiveElement] = {}
+
+    @property
+    def active_channel(self) -> str:
+        """Return the browser channel currently active ('chrome', 'msedge', 'chromium')."""
+        return self._active_channel
+
+    @property
+    def user_data_dir(self) -> Path:
+        """Return the active persistent profile directory."""
+        return (self.config.user_data_dir or get_default_profile_dir()).resolve()
 
     def _run_in_pool(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         future = self._pool.submit(func, *args, **kwargs)
@@ -62,20 +116,57 @@ class BrowserController:
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()
-            _LOG.info("Launching Playwright Chromium (headless=%s)", self.headless)
-            self._browser = self._playwright.chromium.launch(
-                headless=self.headless,
-                args=[
+            profile_path = self.user_data_dir
+            profile_path.mkdir(parents=True, exist_ok=True)
+
+            desired_channel = self.config.channel.lower().strip()
+            launch_kwargs: dict[str, Any] = {
+                "user_data_dir": str(profile_path),
+                "headless": self.config.headless,
+                "viewport": {
+                    "width": self.config.viewport_width,
+                    "height": self.config.viewport_height,
+                },
+                "user_agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--start-maximized",
                 ],
-            )
-            self._context = self._browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            self._page = self._context.new_page()
-            self._page.set_default_timeout(20000)
+                "accept_downloads": True,
+            }
+
+            if desired_channel != "chromium":
+                launch_kwargs["channel"] = desired_channel
+
+            try:
+                _LOG.info(
+                    "Launching persistent browser context (channel=%s, profile=%s, headless=%s)",
+                    desired_channel,
+                    profile_path,
+                    self.config.headless,
+                )
+                self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+                self._active_channel = desired_channel
+            except Exception as err:
+                # Graceful fallback to bundled chromium if specific channel fails
+                if desired_channel != "chromium":
+                    _LOG.warning(
+                        "Failed to launch browser channel '%s': %s. Falling back to bundled Chromium.",
+                        desired_channel,
+                        err,
+                    )
+                    launch_kwargs.pop("channel", None)
+                    self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+                    self._active_channel = "chromium"
+                else:
+                    raise
+
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            self._page.set_default_timeout(self.config.timeout_ms)
         return self._page
 
     def search(self, query: str) -> dict[str, Any]:
@@ -334,11 +425,45 @@ class BrowserController:
             "text": "\n".join(lines[:300]),
         }
 
+    def summarize(self, url: str | None = None, topic_or_query: str = "") -> dict[str, Any]:
+        """Navigate to URL (if given) and extract clean summary of content or specific topic."""
+        return self._run_in_pool(self._summarize_impl, url, topic_or_query)
+
+    def _summarize_impl(self, url: str | None, topic_or_query: str) -> dict[str, Any]:
+        if url:
+            self._navigate_impl(url)
+        page = self._ensure_browser_impl()
+        text_data = self._read_text_impl()
+        full_text = text_data.get("text", "")
+
+        topic_lower = topic_or_query.strip().lower()
+        matching_paragraphs: list[str] = []
+        for para in full_text.split("\n"):
+            para_clean = para.strip()
+            if not para_clean:
+                continue
+            if not topic_lower or topic_lower in para_clean.lower():
+                matching_paragraphs.append(para_clean)
+
+        summary_content = "\n".join(matching_paragraphs[:30]) if matching_paragraphs else full_text[:1500]
+        return {
+            "url": page.url,
+            "title": page.title(),
+            "topic": topic_or_query,
+            "summary": summary_content,
+            "channel": self._active_channel,
+        }
+
     def close(self) -> dict[str, str]:
         """Close the browser session and free resources."""
         return self._run_in_pool(self._close_impl)
 
     def _close_impl(self) -> dict[str, str]:
+        if self._context:
+            try:
+                self._context.close()
+            except Exception as e:
+                _LOG.warning("Error closing persistent browser context: %s", e)
         if self._browser:
             try:
                 self._browser.close()
@@ -361,11 +486,18 @@ class BrowserController:
 _CONTROLLER: BrowserController | None = None
 
 
-def get_browser_controller(headless: bool | None = None) -> BrowserController:
+def get_browser_controller(
+    headless: bool | None = None,
+    config: BrowserConfig | None = None,
+) -> BrowserController:
     """Return the global BrowserController instance."""
     global _CONTROLLER
     if _CONTROLLER is None:
-        _CONTROLLER = BrowserController(headless=headless)
+        _CONTROLLER = BrowserController(headless=headless, config=config)
+    elif config is not None:
+        if _CONTROLLER.config != config:
+            _CONTROLLER.close()
+            _CONTROLLER = BrowserController(config=config)
     elif headless is not None and _CONTROLLER.headless != headless:
         # Recreate controller if headless preference changed
         _CONTROLLER.close()
@@ -403,6 +535,11 @@ def browser_type(index: int, text: str, press_enter: bool = False) -> dict[str, 
 def browser_read_text() -> dict[str, Any]:
     """Read full text content from the current page."""
     return get_browser_controller().read_text()
+
+
+def browser_summarize(url: str | None = None, topic_or_query: str = "") -> dict[str, Any]:
+    """Summarize the currently open web page or a target URL for a given topic."""
+    return get_browser_controller().summarize(url=url, topic_or_query=topic_or_query)
 
 
 def browser_close() -> dict[str, str]:

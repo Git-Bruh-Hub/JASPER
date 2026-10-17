@@ -82,7 +82,9 @@ def test_write_text_file_rejects_oversized_content(tmp_path: Path):
 def test_register_desktop_tools_is_idempotent():
     reg = ToolRegistry()
     register_desktop_tools(reg)
-    assert "write_text_file" in {t.name for t in reg.list()}
+    tools = {t.name for t in reg.list()}
+    assert "write_text_file" in tools
+    assert "browser_summarize" in tools
     count = len(reg.list())
     register_desktop_tools(reg)
     assert len(reg.list()) == count

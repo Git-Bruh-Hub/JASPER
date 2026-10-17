@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import urllib.request
@@ -44,8 +45,9 @@ class SettingsWorkspace(QWidget):
         self._init_ui()
         self.load_from_config()
 
-        # Check Ollama connection and populate available models
-        QTimer.singleShot(150, self.fetch_ollama_models)
+        # Check Ollama connection and populate available models (in real desktop execution)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            QTimer.singleShot(150, self.fetch_ollama_models)
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -87,6 +89,9 @@ class SettingsWorkspace(QWidget):
 
         # Section 4: System & Memory
         container_layout.addWidget(self._build_system_card())
+
+        # Section 5: Browser & Web Automation
+        container_layout.addWidget(self._build_browser_card())
 
         container_layout.addStretch(1)
 
@@ -308,6 +313,129 @@ class SettingsWorkspace(QWidget):
 
         return card
 
+    def _build_browser_card(self) -> QFrame:
+        card = QFrame()
+        card.setProperty("class", "settingsCard")
+        card.setStyleSheet("background: #1e1e1e; border: 1px solid #303030; border-radius: 8px; padding: 14px;")
+        layout = QVBoxLayout(card)
+        layout.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        sec_title = QLabel("Browser & Web Automation")
+        sec_title.setStyleSheet("color: #ffffff; font-weight: 600; font-size: 10.5pt;")
+        header_row.addWidget(sec_title)
+        header_row.addStretch(1)
+
+        self.label_browser_status = QLabel("● Ready")
+        self.label_browser_status.setStyleSheet("color: #8ee6a1; font-size: 9pt;")
+        header_row.addWidget(self.label_browser_status)
+        layout.addLayout(header_row)
+
+        desc = QLabel("JASPER automates web tasks (email, online services) using a persistent profile where your logins stay saved.")
+        desc.setStyleSheet("color: #8c8c8c; font-size: 9pt;")
+        layout.addWidget(desc)
+
+        # Row 1: Browser Engine Selection
+        browser_row = QHBoxLayout()
+        lbl_engine = QLabel("Default Browser Engine:")
+        lbl_engine.setStyleSheet("color: #e0e0e0; font-size: 9.5pt;")
+        lbl_engine.setFixedWidth(180)
+        browser_row.addWidget(lbl_engine)
+
+        self.combo_browser_channel = QComboBox()
+        self.combo_browser_channel.addItem("Google Chrome (Recommended)", "chrome")
+        self.combo_browser_channel.addItem("Microsoft Edge", "msedge")
+        self.combo_browser_channel.addItem("Bundled Chromium", "chromium")
+        self.combo_browser_channel.setStyleSheet(
+            "background: #252525; border: 1px solid #3a3a3a; border-radius: 5px; color: #ffffff; padding: 4px 10px;"
+        )
+        browser_row.addWidget(self.combo_browser_channel, 1)
+        layout.addLayout(browser_row)
+
+        # Row 2: Headless Mode Checkbox
+        self.check_browser_headless = QCheckBox("Run browser in background (Headless)")
+        self.check_browser_headless.setToolTip("When unchecked, browser opens visibly on desktop so you can watch actions.")
+        self.check_browser_headless.setStyleSheet("color: #e0e0e0; font-size: 9.5pt;")
+        layout.addWidget(self.check_browser_headless)
+
+        # Row 3: Profile Folder Path & Open Button
+        profile_row = QHBoxLayout()
+        lbl_profile = QLabel("Profile Storage:")
+        lbl_profile.setStyleSheet("color: #e0e0e0; font-size: 9.5pt;")
+        lbl_profile.setFixedWidth(180)
+        profile_row.addWidget(lbl_profile)
+
+        from app.tools.browser import get_default_profile_dir
+        self.input_browser_profile = QLineEdit(str(get_default_profile_dir()))
+        self.input_browser_profile.setReadOnly(True)
+        self.input_browser_profile.setStyleSheet(
+            "background: #181818; border: 1px solid #333333; border-radius: 5px; color: #a0a0a0; padding: 4px 8px;"
+        )
+        profile_row.addWidget(self.input_browser_profile, 1)
+
+        self.btn_open_profile = QPushButton("Open Folder")
+        self.btn_open_profile.setStyleSheet(
+            "background: #282828; border: 1px solid #404040; border-radius: 5px; color: #ffffff; padding: 5px 12px; font-size: 8.5pt;"
+        )
+        self.btn_open_profile.clicked.connect(self._open_profile_folder)
+        profile_row.addWidget(self.btn_open_profile)
+        layout.addLayout(profile_row)
+
+        # Row 4: Launch browser to pre-authenticate / sign in
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.btn_launch_browser = QPushButton("🌐 Launch Browser (Log into Accounts)")
+        self.btn_launch_browser.setToolTip("Opens your selected browser visibly with the persistent profile so you can log into Gmail, Outlook, etc.")
+        self.btn_launch_browser.setStyleSheet(
+            "background: #1c3644; border: 1px solid #00bcd4; border-radius: 5px; color: #ffffff; padding: 6px 14px; font-weight: 500; font-size: 9pt;"
+        )
+        self.btn_launch_browser.clicked.connect(self._launch_browser_session)
+        btn_row.addWidget(self.btn_launch_browser)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        hint = QLabel("💡 Tip: Sign into your accounts once in this browser. Future JASPER web tasks will use the saved login session.")
+        hint.setStyleSheet("color: #00bcd4; font-size: 8.5pt; font-style: italic;")
+        layout.addWidget(hint)
+
+        return card
+
+    @Slot()
+    def _open_profile_folder(self) -> None:
+        import os
+        from app.tools.browser import get_default_profile_dir
+        folder = get_default_profile_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(folder))
+        except Exception as e:
+            _LOG.warning("Could not open profile folder: %s", e)
+
+    @Slot()
+    def _launch_browser_session(self) -> None:
+        """Launch browser visibly in a background thread so user can log into web accounts."""
+        import threading
+
+        def _runner():
+            try:
+                from app.tools.browser import BrowserConfig, BrowserController
+                channel = self.combo_browser_channel.currentData() or "chrome"
+                ctrl = BrowserController(
+                    config=BrowserConfig(
+                        channel=channel,
+                        headless=False,
+                    )
+                )
+                ctrl.navigate("https://www.google.com")
+            except Exception as e:
+                _LOG.warning("Could not launch browser for login: %s", e)
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        self.label_feedback.setText("✓ Launching browser... Log into your services, then close the window.")
+        self.label_feedback.setStyleSheet("color: #00bcd4; font-weight: 600; font-size: 9.5pt;")
+        self._feedback_timer.start(5000)
+
     def _build_action_bar(self) -> QFrame:
         bar = QFrame()
         bar.setStyleSheet("background: #151515; border-top: 1px solid #2a2a2a; padding: 10px 14px;")
@@ -349,6 +477,15 @@ class SettingsWorkspace(QWidget):
         idx = self.combo_log_level.findText(current_log, Qt.MatchFlag.MatchFixedString)
         if idx >= 0:
             self.combo_log_level.setCurrentIndex(idx)
+
+        # Browser automation settings
+        current_channel = getattr(cfg, "JASPER_BROWSER_CHANNEL", "chrome").lower()
+        b_idx = self.combo_browser_channel.findData(current_channel)
+        if b_idx >= 0:
+            self.combo_browser_channel.setCurrentIndex(b_idx)
+        else:
+            self.combo_browser_channel.setCurrentIndex(0)
+        self.check_browser_headless.setChecked(bool(getattr(cfg, "JASPER_BROWSER_HEADLESS", False)))
 
     def _set_combo_value(self, combo: QComboBox, value: str) -> None:
         idx = combo.findText(value, Qt.MatchFlag.MatchFixedString)
@@ -405,6 +542,11 @@ class SettingsWorkspace(QWidget):
         self.check_memory.setChecked(True)
         self.combo_log_level.setCurrentText("INFO")
 
+        b_idx = self.combo_browser_channel.findData("chrome")
+        if b_idx >= 0:
+            self.combo_browser_channel.setCurrentIndex(b_idx)
+        self.check_browser_headless.setChecked(False)
+
         self.label_feedback.setText("Reset to defaults (click Save Changes to apply)")
         self.label_feedback.setStyleSheet("color: #bdbdbd; font-size: 9pt;")
         self._feedback_timer.start(4000)
@@ -423,6 +565,8 @@ class SettingsWorkspace(QWidget):
             "APPROVAL_GATE_STRICT": self.check_approval_gate.isChecked(),
             "JASPER_MEMORY_ENABLED": self.check_memory.isChecked(),
             "LOG_LEVEL": self.combo_log_level.currentText(),
+            "JASPER_BROWSER_CHANNEL": self.combo_browser_channel.currentData() or "chrome",
+            "JASPER_BROWSER_HEADLESS": self.check_browser_headless.isChecked(),
         }
 
         # Update in-memory config variables
@@ -433,6 +577,20 @@ class SettingsWorkspace(QWidget):
         cfg.JASPER_THINK = settings["JASPER_THINK"]
         cfg.JASPER_MEMORY_ENABLED = settings["JASPER_MEMORY_ENABLED"]
         cfg.LOG_LEVEL = settings["LOG_LEVEL"]
+        cfg.JASPER_BROWSER_CHANNEL = settings["JASPER_BROWSER_CHANNEL"]
+        cfg.JASPER_BROWSER_HEADLESS = settings["JASPER_BROWSER_HEADLESS"]
+
+        # Sync browser controller with updated settings
+        try:
+            from app.tools.browser import BrowserConfig, get_browser_controller
+            get_browser_controller(
+                config=BrowserConfig(
+                    channel=cfg.JASPER_BROWSER_CHANNEL,
+                    headless=cfg.JASPER_BROWSER_HEADLESS,
+                )
+            )
+        except Exception as e:
+            _LOG.warning("Could not sync browser controller with new settings: %s", e)
 
         # Persist to .env file in project root
         self._persist_to_dotenv(settings)
@@ -460,6 +618,8 @@ class SettingsWorkspace(QWidget):
             "JASPER_THINK": str(settings["JASPER_THINK"]).lower(),
             "JASPER_MEMORY_ENABLED": str(settings["JASPER_MEMORY_ENABLED"]).lower(),
             "LOG_LEVEL": settings["LOG_LEVEL"],
+            "JASPER_BROWSER_CHANNEL": settings.get("JASPER_BROWSER_CHANNEL", "chrome"),
+            "JASPER_BROWSER_HEADLESS": str(settings.get("JASPER_BROWSER_HEADLESS", False)).lower(),
         }
 
         updated_keys: set[str] = set()
