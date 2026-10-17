@@ -10,6 +10,7 @@ to avoid asyncio loop collisions and ensure clean synchronous tool dispatch.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -111,62 +112,112 @@ class BrowserController:
     def _is_active_impl(self) -> bool:
         return self._page is not None and not self._page.is_closed()
 
-    def _ensure_browser_impl(self) -> Any:
-        if self._page is None or self._page.is_closed():
-            from playwright.sync_api import sync_playwright
-
-            self._playwright = sync_playwright().start()
-            profile_path = self.user_data_dir
-            profile_path.mkdir(parents=True, exist_ok=True)
-
-            desired_channel = self.config.channel.lower().strip()
-            launch_kwargs: dict[str, Any] = {
-                "user_data_dir": str(profile_path),
-                "headless": self.config.headless,
-                "viewport": {
-                    "width": self.config.viewport_width,
-                    "height": self.config.viewport_height,
-                },
-                "user_agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--start-maximized",
-                ],
-                "accept_downloads": True,
-            }
-
-            if desired_channel != "chromium":
-                launch_kwargs["channel"] = desired_channel
-
+    def _cleanup_impl(self) -> None:
+        """Internal teardown of playwright, context, and thread-local event loops."""
+        if self._context:
             try:
-                _LOG.info(
-                    "Launching persistent browser context (channel=%s, profile=%s, headless=%s)",
-                    desired_channel,
-                    profile_path,
-                    self.config.headless,
-                )
-                self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
-                self._active_channel = desired_channel
-            except Exception as err:
-                # Graceful fallback to bundled chromium if specific channel fails
-                if desired_channel != "chromium":
-                    _LOG.warning(
-                        "Failed to launch browser channel '%s': %s. Falling back to bundled Chromium.",
-                        desired_channel,
-                        err,
-                    )
-                    launch_kwargs.pop("channel", None)
-                    self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
-                    self._active_channel = "chromium"
-                else:
-                    raise
+                self._context.close()
+            except Exception as e:
+                _LOG.debug("Error closing persistent browser context: %s", e)
+            self._context = None
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception as e:
+                _LOG.debug("Error closing browser: %s", e)
+            self._browser = None
+        if self._playwright:
+            try:
+                self._playwright.stop()
+            except Exception as e:
+                _LOG.debug("Error stopping playwright: %s", e)
+            self._playwright = None
+        if hasattr(asyncio, "_set_running_loop"):
+            try:
+                asyncio._set_running_loop(None)
+            except Exception:
+                pass
+        self._page = None
+        self._elements.clear()
 
-            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
-            self._page.set_default_timeout(self.config.timeout_ms)
+    def _ensure_browser_impl(self) -> Any:
+        # If an existing context is alive, reuse it or allocate a new page in it
+        if self._context is not None:
+            if self._page is not None and not self._page.is_closed():
+                return self._page
+            try:
+                if self._context.pages:
+                    self._page = self._context.pages[0]
+                    return self._page
+                self._page = self._context.new_page()
+                self._page.set_default_timeout(self.config.timeout_ms)
+                return self._page
+            except Exception:
+                _LOG.info("Browser context is no longer active, reopening clean session.")
+                self._cleanup_impl()
+
+        # Teardown dead instances and reset thread-local event loop state
+        self._cleanup_impl()
+        if hasattr(asyncio, "_set_running_loop"):
+            try:
+                asyncio._set_running_loop(None)
+            except Exception:
+                pass
+
+        from playwright.sync_api import sync_playwright
+
+        self._playwright = sync_playwright().start()
+        profile_path = self.user_data_dir
+        profile_path.mkdir(parents=True, exist_ok=True)
+
+        desired_channel = self.config.channel.lower().strip()
+        launch_kwargs: dict[str, Any] = {
+            "user_data_dir": str(profile_path),
+            "headless": self.config.headless,
+            "viewport": {
+                "width": self.config.viewport_width,
+                "height": self.config.viewport_height,
+            },
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--start-maximized",
+            ],
+            "accept_downloads": True,
+        }
+
+        if desired_channel != "chromium":
+            launch_kwargs["channel"] = desired_channel
+
+        try:
+            _LOG.info(
+                "Launching persistent browser context (channel=%s, profile=%s, headless=%s)",
+                desired_channel,
+                profile_path,
+                self.config.headless,
+            )
+            self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+            self._active_channel = desired_channel
+        except Exception as err:
+            # Graceful fallback to bundled chromium if specific channel fails
+            if desired_channel != "chromium":
+                _LOG.warning(
+                    "Failed to launch browser channel '%s': %s. Falling back to bundled Chromium.",
+                    desired_channel,
+                    err,
+                )
+                launch_kwargs.pop("channel", None)
+                self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+                self._active_channel = "chromium"
+            else:
+                raise
+
+        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        self._page.set_default_timeout(self.config.timeout_ms)
         return self._page
 
     def search(self, query: str) -> dict[str, Any]:
@@ -641,27 +692,7 @@ class BrowserController:
         return self._run_in_pool(self._close_impl)
 
     def _close_impl(self) -> dict[str, str]:
-        if self._context:
-            try:
-                self._context.close()
-            except Exception as e:
-                _LOG.warning("Error closing persistent browser context: %s", e)
-        if self._browser:
-            try:
-                self._browser.close()
-            except Exception as e:
-                _LOG.warning("Error closing browser: %s", e)
-        if self._playwright:
-            try:
-                self._playwright.stop()
-            except Exception as e:
-                _LOG.warning("Error stopping playwright: %s", e)
-
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
-        self._elements.clear()
+        self._cleanup_impl()
         return {"status": "closed"}
 
 

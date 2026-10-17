@@ -112,8 +112,13 @@ def test_main_window_screen_button_and_command_parsing(qapp, tmp_path: Path):
     pixmap.fill()
     pixmap.save(str(fake_img), "PNG")
 
-    # Test snipped callback
+    # Test snipped callback attaches image
     window._on_chat_snipped(str(fake_img))
+    assert window._attached_image_path == str(fake_img)
+    assert window.attachment_chip.isVisible()
+
+    # Sending text begins request with the attached image
+    window._send_text()
     assert window._attached_image_path is None  # cleared upon send
     assert window.worker.begin_request.called
 

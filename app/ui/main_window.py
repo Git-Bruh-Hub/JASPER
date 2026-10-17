@@ -3,8 +3,15 @@ from __future__ import annotations
 import logging
 from html import escape
 
-from PySide6.QtCore import QMimeData, QThread, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QDragEnterEvent, QDragLeaveEvent, QDropEvent
+from PySide6.QtCore import QEvent, QMimeData, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -80,6 +87,7 @@ class MainWindow(QMainWindow):
         self._active_gate_id: str | None = None
         self._snipper = None
         self._pending_snip_prompt: str | None = None
+        self._auto_send_snip: bool = False
         self._is_watching_screen = False
         self._latest_watch_path: str | None = None
         self._watch_timer = QTimer(self)
@@ -272,6 +280,7 @@ class MainWindow(QMainWindow):
         self.input.setPlaceholderText("Ask JASPER...")
         self.input.returnPressed.connect(self._send_text)
         self.input.setAcceptDrops(False)
+        self.input.installEventFilter(self)
         composer_layout.addWidget(self.input, 1)
 
         self.mic_button = QPushButton("🎤")
@@ -478,15 +487,15 @@ class MainWindow(QMainWindow):
     def _on_screen_button_clicked(self) -> None:
         """Handle click on composer 📸 button."""
         prompt = self.input.text().strip()
-        self.input.clear()
-        self._capture_screen_and_ask(custom_prompt=prompt)
+        self._capture_screen_and_ask(custom_prompt=prompt, auto_send=False)
 
-    def _capture_screen_and_ask(self, custom_prompt: str | None = None) -> None:
+    def _capture_screen_and_ask(self, custom_prompt: str | None = None, auto_send: bool = False) -> None:
         """Launch interactive screen snipping overlay across all monitors."""
         if self.busy:
             return
 
-        self._pending_snip_prompt = custom_prompt if custom_prompt else "What is on my screen and what is this doing?"
+        self._pending_snip_prompt = custom_prompt if custom_prompt else None
+        self._auto_send_snip = auto_send
         self.hide()
 
         def do_snip() -> None:
@@ -510,16 +519,29 @@ class MainWindow(QMainWindow):
         self.show()
         self.activateWindow()
         self._set_attachment(file_path)
-        prompt = getattr(self, "_pending_snip_prompt", None) or "What is on my screen and what is this doing?"
+        prompt = getattr(self, "_pending_snip_prompt", None)
+        auto_send = getattr(self, "_auto_send_snip", False)
         self._pending_snip_prompt = None
-        self.input.setText(prompt)
-        self._send_text()
+        self._auto_send_snip = False
+
+        if auto_send and prompt:
+            self.input.setText(prompt)
+            self._send_text()
+        else:
+            if prompt:
+                self.input.setText(prompt)
+            self.input.setFocus()
 
     @Slot()
     def _on_chat_snip_cancelled(self) -> None:
         self.show()
         self.activateWindow()
+        prompt = getattr(self, "_pending_snip_prompt", None)
+        if prompt:
+            self.input.setText(prompt)
         self._pending_snip_prompt = None
+        self._auto_send_snip = False
+        self.input.setFocus()
 
     @Slot()
     def _toggle_watch_screen(self) -> None:
@@ -580,7 +602,10 @@ class MainWindow(QMainWindow):
     def _send_text(self) -> None:
         text = self.input.text().strip()
         if not text:
-            return
+            if self._attached_image_path:
+                text = "What is on my screen and what is this doing?"
+            else:
+                return
 
         # Quick command: /watch
         if text.lower() in ("/watch", "/watchscreen", "watch screen"):
@@ -603,7 +628,7 @@ class MainWindow(QMainWindow):
             prefix_len = 7 if text.startswith("/screen") else 5
             query = text[prefix_len:].strip()
             self.input.clear()
-            self._capture_screen_and_ask(custom_prompt=query)
+            self._capture_screen_and_ask(custom_prompt=query, auto_send=bool(query))
             return
 
         image_path = self._attached_image_path
@@ -1147,3 +1172,25 @@ class MainWindow(QMainWindow):
             return
         event.acceptProposedAction()
         self._set_attachment(path)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Handle pasting images from system clipboard directly into the composer."""
+        if hasattr(self, "input") and watched is self.input and event.type() == QEvent.Type.KeyPress:
+            key_event: QKeyEvent = event  # type: ignore
+            if key_event.matches(QKeySequence.StandardKey.Paste):
+                clipboard = QApplication.clipboard()
+                mime = clipboard.mimeData()
+                if mime and mime.hasImage():
+                    img = clipboard.image()
+                    if not img.isNull():
+                        from pathlib import Path as _Path
+                        from datetime import datetime as _dt
+                        target_dir = _Path("data/captures")
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        timestamp = _dt.now().strftime("%Y%m%d_%H%M%S_%f")
+                        paste_path = target_dir / f"paste_{timestamp}.png"
+                        if img.save(str(paste_path), "PNG"):
+                            self._set_attachment(str(paste_path))
+                            return True
+        return super().eventFilter(watched, event)
+
