@@ -1,38 +1,52 @@
-# Implementation Plan: Browser Automation with Multi-Browser & Persistent Profiles
+# Implementation Plan: C → B → A (Toasts/Tray Alerts → Expanded Browser Automation → Windows Packaging)
 
-## User Review Required
-> [!IMPORTANT]
-> This milestone gives JASPER the ability to control system-installed Google Chrome, Microsoft Edge, or bundled Chromium using a persistent user profile directory (`~/.jasper/browser_profile`). This allows login sessions (webmail, cloud dashboards, etc.) to persist across tasks so JASPER can perform real-world tasks like opening email and summarizing messages without repeated logins.
+## Milestone Sequence Requested by User:
+1. **Option C: User Notification Toasts & System Tray Alert Banners**
+2. **Option B: Expanded Browser Automation Capabilities (Email extraction, multi-tab switching, element observation)**
+3. **Option A: Windows Deployability & Standalone Packaging (`jasper.spec`, build scripts, and standalone EXE)**
 
 ---
 
-## Proposed Slices
-
-### Slice 1: Multi-Browser & Persistent Context Engine
-- **Files:** `app/tools/browser.py`
+## Slice 1 (Option C): Desktop Notification Toasts & System Tray Alerts
 - **Goal:**
-  - Add `BrowserConfig` dataclass supporting `channel` (`"chrome"`, `"msedge"`, `"chromium"`), `user_data_dir`, and `headless` mode.
-  - Switch `BrowserController` to Playwright `launch_persistent_context` pointing to `~/.jasper/browser_profile`.
-  - Add automatic fallback to bundled Chromium if the requested channel (e.g. Chrome or Edge) is not installed on the system.
-  - Implement `browser_summarize(url_or_topic: str)` high-level extractor.
+  - Provide both native OS system tray notifications (`QSystemTrayIcon.showMessage`) and a non-intrusive animated in-app toast notification banner in `MainWindow`.
+  - Alert the user when:
+    - Long-running autonomous web tasks / browser tasks finish.
+    - Security approval is requested while the window is in background or minimized.
+    - An error or cancellation occurs.
+  - Add notification toggle in `app/core/config.py` and `SettingsWorkspace`.
+- **Files:**
+  - `app/core/config.py`
+  - `app/ui/main_window.py`
+  - `app/ui/toast_banner.py` (new lightweight widget)
+  - `app/ui/settings_workspace.py`
+  - `tests/test_notifications.py` (new test file)
 
-### Slice 2: Settings Workspace Browser UI Integration
-- **Files:** `app/ui/settings_workspace.py`
-- **Goal:**
-  - Add "Browser & Web Automation" settings card in `SettingsWorkspace`.
-  - Provide dropdown to select Default Browser: `Google Chrome`, `Microsoft Edge`, `Bundled Chromium`.
-  - Display the active persistent profile location with a quick "Open Profile Folder" button.
-  - Persist the selected browser in `config/settings.json`.
+---
 
-### Slice 3: Desktop Tool Wiring & High-Level Task Routing
-- **Files:** `app/agents/desktop_wiring.py`, `app/core/orchestrator.py`
+## Slice 2 (Option B): Expanded Browser Automation Capabilities
 - **Goal:**
-  - Register `browser_summarize` and update browser tool descriptions for natural language routing.
-  - Ground the model to recognize requests like "open browser and go to my email, summarize the email from 7-eleven" and decompose into navigation, element observation, and extraction.
+  - Enhance `BrowserController` in `app/tools/browser.py` with:
+    - Tab management: `new_tab(url)`, `switch_tab(index)`, `close_tab(index)`, `list_tabs()`.
+    - Dedicated webmail / email helper: `read_inbox(filter_query)` to extract sender, subject, and snippet from webmail DOMs (Gmail, Outlook, Yahoo) using resilient selectors.
+    - Element observation & action helper: `click_element(index)`, `type_element(index, text)` for targeted automation.
+  - Wire tools into `app/agents/desktop_wiring.py` and update autonomy router.
+- **Files:**
+  - `app/tools/browser.py`
+  - `app/agents/desktop_wiring.py`
+  - `tests/test_browser_expanded.py`
 
-### Slice 4: Comprehensive Test Suite & Full Regression Verification
-- **Files:** `tests/test_browser_persistent.py`
+---
+
+## Slice 3 (Option A): Windows Deployability & Standalone Packaging
 - **Goal:**
-  - Test browser configuration, persistent profile directory resolution, channel fallback, and DOM summarization.
-  - Verify settings saving and loading for browser configuration.
-  - Run full test suite (`tests/`) to ensure all 507+ tests pass with zero regressions.
+  - Create a production-ready PyInstaller build specification `jasper.spec` that bundles:
+    - Main entry point: `app/desktop.py`.
+    - Assets: `assets/jasper_icon.png`, `assets/jasper_icon.ico`.
+    - Binaries & dynamic libraries: Faster-Whisper / CTranslate2 runtime DLLs, PySide6 Qt plugins, Playwright drivers.
+  - Add build and validation PowerShell script: `scripts/build_windows_exe.ps1`.
+  - Test build process or standalone configuration validation.
+- **Files:**
+  - `jasper.spec`
+  - `scripts/build_windows_exe.ps1`
+  - `docs/deployment/windows_packaging.md`

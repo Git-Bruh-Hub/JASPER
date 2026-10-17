@@ -33,6 +33,7 @@ from app.ui.scheduled_workspace import ScheduledWorkspace
 from app.ui.settings_workspace import SettingsWorkspace
 from app.ui.styles import APP_STYLE
 from app.ui.tasks_workspace import TasksWorkspace
+from app.ui.toast_banner import ToastBanner
 from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
 from app.ui.worker import JasperWorker
 from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
@@ -163,6 +164,8 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(24, 18, 24, 18)
         content_layout.setSpacing(10)
+        self.toast_banner = ToastBanner(self)
+        content_layout.addWidget(self.toast_banner)
         self._build_pages()
         content_layout.addWidget(self.page_stack, 1)
         body.addWidget(content, 1)
@@ -366,12 +369,14 @@ class MainWindow(QMainWindow):
             self.worker.approval_requested.connect(self._on_approval_requested)
 
     def _setup_icon(self) -> None:
+        import sys
         from pathlib import Path
         from PySide6.QtGui import QIcon
 
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent.parent))
         icon_path = Path("assets/jasper_icon.png")
         if not icon_path.exists():
-            icon_path = Path(__file__).resolve().parent.parent.parent / "assets" / "jasper_icon.png"
+            icon_path = base_dir / "assets" / "jasper_icon.png"
 
         if icon_path.exists():
             self._app_icon = QIcon(str(icon_path))
@@ -719,6 +724,16 @@ class MainWindow(QMainWindow):
         self._active_approval_dialog = dialog
         self._active_gate_id = request.gate_id
 
+        tool_name = getattr(request.action, "tool_name", "action") if hasattr(request, "action") else getattr(request, "tool_name", "action")
+        desc = getattr(request.action, "description", "") if hasattr(request, "action") else getattr(request, "description", "")
+        summary = f"{tool_name}: {desc[:80]}" if desc else f"{tool_name} requires confirmation"
+
+        self.notify_user(
+            "JASPER Approval Required",
+            summary,
+            level="warning",
+        )
+
         dialog.decision_made.connect(self._on_approval_decision)
 
         def _cleanup():
@@ -739,11 +754,43 @@ class MainWindow(QMainWindow):
         if not success:
             _LOG.warning("Approval resolution rejected for gate_id=%s, granted=%s", gate_id, granted)
 
+    def notify_user(self, title: str, message: str, level: str = "info") -> None:
+        """Deliver user notifications both via in-app toast banner and system tray."""
+        import app.core.config as _cfg
+        if not getattr(_cfg, "JASPER_NOTIFICATIONS_ENABLED", True):
+            return
+
+        # 1. In-app toast banner
+        if hasattr(self, "toast_banner"):
+            self.toast_banner.show_toast(title, message, level=level, timeout_ms=5000)
+
+        # 2. System tray notification (native OS toast)
+        if getattr(self, "_tray", None) and self._tray.isVisible():
+            icon_map = {
+                "success": QSystemTrayIcon.MessageIcon.Information,
+                "info": QSystemTrayIcon.MessageIcon.Information,
+                "warning": QSystemTrayIcon.MessageIcon.Warning,
+                "error": QSystemTrayIcon.MessageIcon.Critical,
+            }
+            tray_icon = icon_map.get(level.lower(), QSystemTrayIcon.MessageIcon.Information)
+            try:
+                self._tray.showMessage(title, message, tray_icon, 4500)
+            except Exception as e:
+                _LOG.warning("Could not show tray message: %s", e)
+
     @Slot()
     def _on_finished(self) -> None:
         self._set_busy(False)
         if hasattr(self, "tasks_page"):
             self.tasks_page.task_completed()
+
+        snippet = ""
+        if self._messages and self._messages[-1][0] == "JASPER":
+            content = self._messages[-1][1]
+            clean = content.replace("**", "").replace("#", "").strip()
+            snippet = (clean[:90] + "...") if len(clean) > 90 else clean
+        if snippet:
+            self.notify_user("JASPER Task Complete", snippet, level="success")
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
@@ -755,6 +802,7 @@ class MainWindow(QMainWindow):
         self._stop_thinking()
         self._append_message("JASPER", f"I couldn't complete that request.\n\n{message}")
         self._set_busy(False)
+        self.notify_user("JASPER Error", message[:100], level="error")
 
     @Slot(dict)
     def _on_system_status(self, info: dict) -> None:

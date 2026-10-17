@@ -296,6 +296,11 @@ class SettingsWorkspace(QWidget):
         self.check_memory.setStyleSheet("color: #d0d0d0; font-size: 9.5pt;")
         layout.addWidget(self.check_memory)
 
+        self.check_notifications = QCheckBox("Enable Desktop Notifications & Tray Banners")
+        self.check_notifications.setStyleSheet("color: #d0d0d0; font-size: 9.5pt;")
+        self.check_notifications.setToolTip("Show native Windows notification toasts and in-app banners when tasks finish.")
+        layout.addWidget(self.check_notifications)
+
         log_row = QHBoxLayout()
         log_row.setSpacing(8)
         lbl_log = QLabel("Log Level:")
@@ -472,6 +477,7 @@ class SettingsWorkspace(QWidget):
         self._set_combo_value(self.combo_vision_model, cfg.JASPER_VISION_MODEL)
         self.check_think.setChecked(bool(cfg.JASPER_THINK))
         self.check_memory.setChecked(bool(cfg.JASPER_MEMORY_ENABLED))
+        self.check_notifications.setChecked(bool(getattr(cfg, "JASPER_NOTIFICATIONS_ENABLED", True)))
 
         current_log = getattr(cfg, "LOG_LEVEL", "INFO")
         idx = self.combo_log_level.findText(current_log, Qt.MatchFlag.MatchFixedString)
@@ -540,6 +546,7 @@ class SettingsWorkspace(QWidget):
         self.spin_timeout.setValue(45)
         self.check_approval_gate.setChecked(True)
         self.check_memory.setChecked(True)
+        self.check_notifications.setChecked(True)
         self.combo_log_level.setCurrentText("INFO")
 
         b_idx = self.combo_browser_channel.findData("chrome")
@@ -564,6 +571,7 @@ class SettingsWorkspace(QWidget):
             "TIMEOUT_SECONDS": self.spin_timeout.value(),
             "APPROVAL_GATE_STRICT": self.check_approval_gate.isChecked(),
             "JASPER_MEMORY_ENABLED": self.check_memory.isChecked(),
+            "JASPER_NOTIFICATIONS_ENABLED": self.check_notifications.isChecked(),
             "LOG_LEVEL": self.combo_log_level.currentText(),
             "JASPER_BROWSER_CHANNEL": self.combo_browser_channel.currentData() or "chrome",
             "JASPER_BROWSER_HEADLESS": self.check_browser_headless.isChecked(),
@@ -576,6 +584,7 @@ class SettingsWorkspace(QWidget):
         cfg.JASPER_VISION_MODEL = settings["JASPER_VISION_MODEL"]
         cfg.JASPER_THINK = settings["JASPER_THINK"]
         cfg.JASPER_MEMORY_ENABLED = settings["JASPER_MEMORY_ENABLED"]
+        cfg.JASPER_NOTIFICATIONS_ENABLED = settings["JASPER_NOTIFICATIONS_ENABLED"]
         cfg.LOG_LEVEL = settings["LOG_LEVEL"]
         cfg.JASPER_BROWSER_CHANNEL = settings["JASPER_BROWSER_CHANNEL"]
         cfg.JASPER_BROWSER_HEADLESS = settings["JASPER_BROWSER_HEADLESS"]
@@ -617,6 +626,7 @@ class SettingsWorkspace(QWidget):
             "JASPER_VISION_MODEL": settings["JASPER_VISION_MODEL"],
             "JASPER_THINK": str(settings["JASPER_THINK"]).lower(),
             "JASPER_MEMORY_ENABLED": str(settings["JASPER_MEMORY_ENABLED"]).lower(),
+            "JASPER_NOTIFICATIONS_ENABLED": str(settings.get("JASPER_NOTIFICATIONS_ENABLED", True)).lower(),
             "LOG_LEVEL": settings["LOG_LEVEL"],
             "JASPER_BROWSER_CHANNEL": settings.get("JASPER_BROWSER_CHANNEL", "chrome"),
             "JASPER_BROWSER_HEADLESS": str(settings.get("JASPER_BROWSER_HEADLESS", False)).lower(),

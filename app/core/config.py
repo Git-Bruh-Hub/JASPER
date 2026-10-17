@@ -63,3 +63,6 @@ JASPER_VOICE_CONVERSATION_EMPTY_LIMIT = max(1, int(os.getenv("JASPER_VOICE_CONVE
 JASPER_BROWSER_CHANNEL = os.getenv("JASPER_BROWSER_CHANNEL", "chrome").lower()
 JASPER_BROWSER_HEADLESS = os.getenv("JASPER_BROWSER_HEADLESS", "false").lower() in {"1", "true", "yes", "on"}
 JASPER_BROWSER_PROFILE = os.getenv("JASPER_BROWSER_PROFILE", "")
+
+# Desktop Notification Configuration
+JASPER_NOTIFICATIONS_ENABLED = os.getenv("JASPER_NOTIFICATIONS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}

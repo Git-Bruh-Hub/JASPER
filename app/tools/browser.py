@@ -454,6 +454,188 @@ class BrowserController:
             "channel": self._active_channel,
         }
 
+    def list_tabs(self) -> list[dict[str, Any]]:
+        """Return a list of all open tabs in the browser."""
+        return self._run_in_pool(self._list_tabs_impl)
+
+    def _list_tabs_impl(self) -> list[dict[str, Any]]:
+        self._ensure_browser_impl()
+        tabs: list[dict[str, Any]] = []
+        for i, p in enumerate(self._context.pages):
+            try:
+                title = p.title()
+                url = p.url
+            except Exception:
+                title, url = "Untitled", "about:blank"
+            tabs.append({
+                "index": i,
+                "title": title,
+                "url": url,
+                "is_active": (p == self._page),
+            })
+        return tabs
+
+    def new_tab(self, url: str = "about:blank") -> dict[str, Any]:
+        """Open a new tab and switch to it."""
+        return self._run_in_pool(self._new_tab_impl, url)
+
+    def _new_tab_impl(self, url: str) -> dict[str, Any]:
+        self._ensure_browser_impl()
+        new_page = self._context.new_page()
+        new_page.set_default_timeout(self.config.timeout_ms)
+        self._page = new_page
+        self._elements.clear()
+        if url and url != "about:blank":
+            return self._navigate_impl(url)
+        return {
+            "status": "opened",
+            "tab_index": len(self._context.pages) - 1,
+            "url": self._page.url,
+            "title": self._page.title(),
+        }
+
+    def switch_tab(self, index: int) -> dict[str, Any]:
+        """Switch to a specific tab by its index."""
+        return self._run_in_pool(self._switch_tab_impl, index)
+
+    def _switch_tab_impl(self, index: int) -> dict[str, Any]:
+        self._ensure_browser_impl()
+        pages = self._context.pages
+        if not (0 <= index < len(pages)):
+            raise IndexError(f"Tab index [{index}] out of range. Open tabs: {len(pages)}")
+        self._page = pages[index]
+        self._page.bring_to_front()
+        self._elements.clear()
+        snapshot = self._get_dom_snapshot_impl()
+        return {
+            "status": "switched",
+            "tab_index": index,
+            "url": self._page.url,
+            "title": self._page.title(),
+            "snapshot": snapshot,
+        }
+
+    def close_tab(self, index: int | None = None) -> dict[str, Any]:
+        """Close a specific tab by index, or the active tab if index is None."""
+        return self._run_in_pool(self._close_tab_impl, index)
+
+    def _close_tab_impl(self, index: int | None) -> dict[str, Any]:
+        self._ensure_browser_impl()
+        pages = self._context.pages
+        if not pages:
+            return {"status": "no_open_tabs"}
+
+        if index is not None:
+            if not (0 <= index < len(pages)):
+                raise IndexError(f"Tab index [{index}] out of range. Open tabs: {len(pages)}")
+            page_to_close = pages[index]
+        else:
+            page_to_close = self._page
+
+        page_to_close.close()
+        remaining = self._context.pages
+        if remaining:
+            self._page = remaining[0]
+            self._page.bring_to_front()
+        else:
+            self._page = self._context.new_page()
+
+        self._elements.clear()
+        return {
+            "status": "closed_tab",
+            "remaining_tabs": len(remaining),
+            "active_tab_title": self._page.title() if self._page else "",
+            "active_tab_url": self._page.url if self._page else "",
+        }
+
+    def read_inbox(self, filter_query: str = "") -> dict[str, Any]:
+        """Extract structured email items (sender, subject, snippet, date) from webmail or inbox pages."""
+        return self._run_in_pool(self._read_inbox_impl, filter_query)
+
+    def _read_inbox_impl(self, filter_query: str = "") -> dict[str, Any]:
+        page = self._ensure_browser_impl()
+
+        # Resilient JavaScript evaluator scanning for email/message row patterns (Gmail, Outlook, Yahoo, etc.)
+        emails = page.evaluate(
+            r'''() => {
+                const results = [];
+                const rows = document.querySelectorAll(
+                    'tr.zA, div[role="row"], div[role="listitem"], [data-message-id], .email-item, tbody tr'
+                );
+
+                rows.forEach((row, i) => {
+                    const text = (row.innerText || '').trim();
+                    if (!text || text.length < 5) return;
+
+                    let sender = "";
+                    let subject = "";
+                    let snippet = "";
+                    let date = "";
+
+                    const gSender = row.querySelector('.yX, .zF, [email], [name]');
+                    const gSubject = row.querySelector('.y6, .bog, [data-thread-id]');
+                    const gSnippet = row.querySelector('.y2');
+                    const gDate = row.querySelector('.xW, title, [data-tooltip]');
+
+                    if (gSender || gSubject) {
+                        sender = gSender ? gSender.innerText.trim() : "";
+                        subject = gSubject ? gSubject.innerText.trim() : "";
+                        snippet = gSnippet ? gSnippet.innerText.trim() : "";
+                        date = gDate ? gDate.innerText.trim() : "";
+                    } else {
+                        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+                        if (lines.length >= 2) {
+                            sender = lines[0];
+                            subject = lines[1];
+                            snippet = lines.slice(2).join(' ');
+                        } else {
+                            subject = text;
+                        }
+                    }
+
+                    results.push({
+                        id: i + 1,
+                        sender: sender || "Unknown",
+                        subject: subject || "No Subject",
+                        snippet: snippet,
+                        date: date,
+                        raw: text.slice(0, 200)
+                    });
+                });
+                return results;
+            }'''
+        )
+
+        query_clean = filter_query.strip().lower()
+        matched: list[dict[str, Any]] = []
+        for e in emails:
+            combined = f"{e.get('sender', '')} {e.get('subject', '')} {e.get('snippet', '')} {e.get('raw', '')}".lower()
+            if not query_clean or query_clean in combined:
+                matched.append(e)
+
+        # Fallback: if no structured rows were detected, fallback to scanning full text for query
+        if not matched and query_clean:
+            text_data = self._read_text_impl()
+            full_text = text_data.get("text", "")
+            for line in full_text.split("\n"):
+                if query_clean in line.lower():
+                    matched.append({
+                        "id": len(matched) + 1,
+                        "sender": "Web Page Content",
+                        "subject": line.strip(),
+                        "snippet": line.strip(),
+                        "date": "",
+                        "raw": line.strip()[:200],
+                    })
+
+        return {
+            "count": len(matched),
+            "filter_query": filter_query,
+            "url": page.url,
+            "title": page.title(),
+            "emails": matched[:25],
+        }
+
     def close(self) -> dict[str, str]:
         """Close the browser session and free resources."""
         return self._run_in_pool(self._close_impl)
@@ -540,6 +722,31 @@ def browser_read_text() -> dict[str, Any]:
 def browser_summarize(url: str | None = None, topic_or_query: str = "") -> dict[str, Any]:
     """Summarize the currently open web page or a target URL for a given topic."""
     return get_browser_controller().summarize(url=url, topic_or_query=topic_or_query)
+
+
+def browser_list_tabs() -> list[dict[str, Any]]:
+    """List all open browser tabs with their index, title, and URL."""
+    return get_browser_controller().list_tabs()
+
+
+def browser_new_tab(url: str = "about:blank") -> dict[str, Any]:
+    """Open a new browser tab, optionally navigating to a URL."""
+    return get_browser_controller().new_tab(url=url)
+
+
+def browser_switch_tab(index: int) -> dict[str, Any]:
+    """Switch active focus to a specific open tab by index."""
+    return get_browser_controller().switch_tab(index=int(index))
+
+
+def browser_close_tab(index: int | None = None) -> dict[str, Any]:
+    """Close a specific tab by index, or the active tab if index is None."""
+    return get_browser_controller().close_tab(index=int(index) if index is not None else None)
+
+
+def browser_read_inbox(filter_query: str = "") -> dict[str, Any]:
+    """Extract email headers and previews (sender, subject, snippet) from webmail / inbox pages."""
+    return get_browser_controller().read_inbox(filter_query=str(filter_query))
 
 
 def browser_close() -> dict[str, str]:

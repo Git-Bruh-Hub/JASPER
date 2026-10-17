@@ -16,11 +16,16 @@ from app.core.scoped_permissions import ScopedPermissionManager
 from app.tools.browser import (
     browser_click,
     browser_close,
+    browser_close_tab,
     browser_get_dom,
+    browser_list_tabs,
     browser_navigate,
+    browser_new_tab,
+    browser_read_inbox,
     browser_read_text,
     browser_search,
     browser_summarize,
+    browser_switch_tab,
     browser_type,
 )
 from app.tools.filesystem import write_text_file
@@ -218,6 +223,99 @@ def register_desktop_tools(registry: ToolRegistry) -> None:
             handler=browser_close,
             parameters={"type": "object", "properties": {}},
             resource_extractor=lambda _: "browser://close",
+            requires_filesystem=False,
+        ))
+
+    # 7.1. Browser Read Inbox (Risk.READ -> read-only email extraction)
+    if "browser_read_inbox" not in existing_tools:
+        registry.register(Tool(
+            name="browser_read_inbox",
+            description="Extract email headers and previews (sender, subject, snippet) from webmail / inbox pages matching an optional query (e.g. '7-eleven', 'order', 'voucher').",
+            risk=Risk.READ,
+            handler=browser_read_inbox,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "filter_query": {
+                        "type": "string",
+                        "description": "Optional keyword or sender name to filter inbox emails.",
+                    },
+                },
+                "required": [],
+            },
+            resource_extractor=lambda args: f"browser://inbox?filter={args.get('filter_query', '')}",
+            requires_filesystem=False,
+        ))
+
+    # 7.2. Browser Multi-Tab Management Tools (Risk.READ)
+    if "browser_list_tabs" not in existing_tools:
+        registry.register(Tool(
+            name="browser_list_tabs",
+            description="List all currently open browser tabs with index, title, URL, and active status.",
+            risk=Risk.READ,
+            handler=browser_list_tabs,
+            parameters={"type": "object", "properties": {}},
+            resource_extractor=lambda _: "browser://tabs",
+            requires_filesystem=False,
+        ))
+
+    if "browser_new_tab" not in existing_tools:
+        registry.register(Tool(
+            name="browser_new_tab",
+            description="Open a new browser tab, optionally navigating directly to a target URL.",
+            risk=Risk.READ,
+            handler=browser_new_tab,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to in the new tab.",
+                    },
+                },
+                "required": [],
+            },
+            resource_extractor=lambda args: f"browser://new_tab?url={args.get('url', '')}",
+            requires_filesystem=False,
+        ))
+
+    if "browser_switch_tab" not in existing_tools:
+        registry.register(Tool(
+            name="browser_switch_tab",
+            description="Switch active focus to a specific open tab by its integer index.",
+            risk=Risk.READ,
+            handler=browser_switch_tab,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "The integer index of the tab to switch to.",
+                    },
+                },
+                "required": ["index"],
+            },
+            resource_extractor=lambda args: f"browser://switch_tab/[{args.get('index', '')}]",
+            requires_filesystem=False,
+        ))
+
+    if "browser_close_tab" not in existing_tools:
+        registry.register(Tool(
+            name="browser_close_tab",
+            description="Close a specific tab by its index, or the active tab if index is omitted.",
+            risk=Risk.READ,
+            handler=browser_close_tab,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "Optional integer index of the tab to close.",
+                    },
+                },
+                "required": [],
+            },
+            resource_extractor=lambda args: f"browser://close_tab/[{args.get('index', '')}]",
             requires_filesystem=False,
         ))
 
