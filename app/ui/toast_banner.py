@@ -59,6 +59,17 @@ class ToastBanner(QFrame):
         self._init_ui()
         self.hide()
 
+        try:
+            from PySide6.QtWidgets import QGraphicsDropShadowEffect
+            from PySide6.QtGui import QColor
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(20)
+            shadow.setColor(QColor(0, 0, 0, 180))
+            shadow.setOffset(0, 5)
+            self.setGraphicsEffect(shadow)
+        except Exception:
+            pass
+
     def _init_ui(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -109,7 +120,7 @@ class ToastBanner(QFrame):
             f"QFrame#toastBanner {{ "
             f"background: {theme['bg']}; "
             f"border: 1px solid {theme['border']}; "
-            f"border-radius: 6px; "
+            f"border-radius: 8px; "
             f"}}"
         )
         self.label_icon.setText(theme["icon"])
@@ -118,7 +129,24 @@ class ToastBanner(QFrame):
         self.label_title.setStyleSheet(f"font-size: 9.5pt; font-weight: 600; color: {theme['title_color']};")
         self.label_message.setText(message)
 
+        # Reposition to top-middle if floating over parent widget
+        parent = self.parentWidget()
+        if parent:
+            pw = parent.width()
+            target_w = min(540, max(360, pw - 80))
+            self.setFixedWidth(target_w)
+            self.move((pw - target_w) // 2, 12)
+            self.raise_()
+
         self.show()
+
+        # Play sound notification on Windows
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+
         if timeout_ms > 0:
             self._timer.start(timeout_ms)
 

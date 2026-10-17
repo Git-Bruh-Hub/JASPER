@@ -74,6 +74,21 @@ class ScreenSnipper(QWidget):
 
         self.show()
         self.activateWindow()
+        self.raise_()
+        try:
+            self.grabMouse()
+        except Exception:
+            pass
+
+    def closeEvent(self, event) -> None:
+        self._release_mouse()
+        super().closeEvent(event)
+
+    def _release_mouse(self) -> None:
+        try:
+            self.releaseMouse()
+        except Exception:
+            pass
 
     def paintEvent(self, event: QPaintEvent) -> None:
         if self._desktop_pixmap.isNull():
@@ -124,11 +139,13 @@ class ScreenSnipper(QWidget):
     def _get_selection_rect(self) -> QRect:
         if not self._start_pos or not self._current_pos:
             return QRect()
-        x1 = min(self._start_pos.x(), self._current_pos.x())
-        y1 = min(self._start_pos.y(), self._current_pos.y())
-        x2 = max(self._start_pos.x(), self._current_pos.x())
-        y2 = max(self._start_pos.y(), self._current_pos.y())
-        return QRect(x1, y1, x2 - x1, y2 - y1)
+        max_w = self._desktop_pixmap.width() if not self._desktop_pixmap.isNull() else self.width()
+        max_h = self._desktop_pixmap.height() if not self._desktop_pixmap.isNull() else self.height()
+        x1 = max(0, min(self._start_pos.x(), self._current_pos.x()))
+        y1 = max(0, min(self._start_pos.y(), self._current_pos.y()))
+        x2 = min(max_w, max(self._start_pos.x(), self._current_pos.x()))
+        y2 = min(max_h, max(self._start_pos.y(), self._current_pos.y()))
+        return QRect(x1, y1, max(0, x2 - x1), max(0, y2 - y1))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -137,6 +154,7 @@ class ScreenSnipper(QWidget):
             self._is_selecting = True
             self.update()
         elif event.button() == Qt.MouseButton.RightButton:
+            self._release_mouse()
             self.close()
             self.cancelled.emit()
 
@@ -151,6 +169,7 @@ class ScreenSnipper(QWidget):
             self._current_pos = event.position().toPoint()
             rect = self._get_selection_rect()
 
+            self._release_mouse()
             if rect.width() >= 12 and rect.height() >= 12:
                 self._save_and_emit(rect)
             else:
@@ -159,6 +178,7 @@ class ScreenSnipper(QWidget):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Double click captures the entire monitor under the cursor."""
+        self._release_mouse()
         global_pos = event.globalPosition().toPoint()
         screen = QGuiApplication.screenAt(global_pos)
         if screen:
@@ -173,10 +193,12 @@ class ScreenSnipper(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
+            self._release_mouse()
             self.close()
             self.cancelled.emit()
 
     def _save_and_emit(self, rect: QRect) -> None:
+        self._release_mouse()
         cropped = self._desktop_pixmap.copy(rect)
         self.close()
 

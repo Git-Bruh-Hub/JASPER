@@ -152,9 +152,9 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(body, 1)
 
         sidebar = QFrame(objectName="sidebar")
-        sidebar.setFixedWidth(190)
+        sidebar.setFixedWidth(220)
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(12, 16, 12, 12)
+        sidebar_layout.setContentsMargins(10, 14, 10, 10)
         sidebar_layout.setSpacing(4)
         sidebar_title = QLabel("WORKSPACES")
         sidebar_title.setObjectName("sidebarTitle")
@@ -167,16 +167,44 @@ class MainWindow(QMainWindow):
             button.setCheckable(True)
             button.clicked.connect(lambda checked, i=index: self._select_page(i))
             self.nav_buttons.append(button)
-            sidebar_layout.addWidget(button)
-        sidebar_layout.addStretch(1)
+
+        # Workspace navigation buttons 0 to 5 (Chat, Tasks, Scheduled, Plugins, Files, Git)
+        for i in range(6):
+            sidebar_layout.addWidget(self.nav_buttons[i])
+
+        # Subtle separator above chat history
+        sep_top = QFrame()
+        sep_top.setFrameShape(QFrame.Shape.HLine)
+        sep_top.setStyleSheet("background-color: #2b2b2b; max-height: 1px; border: none; margin: 8px 2px 6px 2px;")
+        sidebar_layout.addWidget(sep_top)
+
+        # Embedded Chat History Session Drawer (occupies flexible middle section with internal scroll)
+        self.session_drawer = SessionDrawer(sidebar)
+        self.session_drawer.new_chat_requested.connect(self._on_new_chat_clicked)
+        self.session_drawer.session_selected.connect(self._on_session_selected)
+        self.session_drawer.session_renamed.connect(self._on_session_renamed)
+        self.session_drawer.session_pinned.connect(self._on_session_pinned)
+        self.session_drawer.delete_session_requested.connect(self._on_session_deleted)
+        sidebar_layout.addWidget(self.session_drawer, 1)
+
+        # Subtle separator above Settings
+        sep_bottom = QFrame()
+        sep_bottom.setFrameShape(QFrame.Shape.HLine)
+        sep_bottom.setStyleSheet("background-color: #2b2b2b; max-height: 1px; border: none; margin: 6px 2px 4px 2px;")
+        sidebar_layout.addWidget(sep_bottom)
+
+        # Bottom-pinned Settings button (workspace index 6), permanently anchored above the status bar
+        settings_button = self.nav_buttons[6]
+        sidebar_layout.addWidget(settings_button)
+        settings_button.raise_()
+
         body.addWidget(sidebar)
 
         content = QFrame(objectName="contentFrame")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(24, 18, 24, 18)
         content_layout.setSpacing(10)
-        self.toast_banner = ToastBanner(self)
-        content_layout.addWidget(self.toast_banner)
+        self.toast_banner = ToastBanner(content)
         self._build_pages()
         content_layout.addWidget(self.page_stack, 1)
         body.addWidget(content, 1)
@@ -185,21 +213,8 @@ class MainWindow(QMainWindow):
 
     def _build_pages(self) -> None:
         self.chat_page = QWidget()
-        page_layout = QHBoxLayout(self.chat_page)
-        page_layout.setContentsMargins(0, 0, 0, 0)
-        page_layout.setSpacing(0)
-
-        self.session_drawer = SessionDrawer(self)
-        self.session_drawer.new_chat_requested.connect(self._on_new_chat_clicked)
-        self.session_drawer.session_selected.connect(self._on_session_selected)
-        self.session_drawer.session_renamed.connect(self._on_session_renamed)
-        self.session_drawer.session_pinned.connect(self._on_session_pinned)
-        self.session_drawer.delete_session_requested.connect(self._on_session_deleted)
-        page_layout.addWidget(self.session_drawer)
-
-        chat_container = QWidget()
-        chat_layout = QVBoxLayout(chat_container)
-        chat_layout.setContentsMargins(14, 0, 0, 0)
+        chat_layout = QVBoxLayout(self.chat_page)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
         chat_layout.setSpacing(8)
         header = QHBoxLayout()
         title = QLabel("Conversation / Task")
@@ -296,7 +311,6 @@ class MainWindow(QMainWindow):
         composer_layout.addWidget(self.send_button)
 
         chat_layout.addWidget(composer)
-        page_layout.addWidget(chat_container, 1)
         self.chat_page.setAcceptDrops(True)
 
         # Stack Pages (Total 7 pages)
@@ -854,7 +868,18 @@ class MainWindow(QMainWindow):
             clean = content.replace("**", "").replace("#", "").strip()
             snippet = (clean[:90] + "...") if len(clean) > 90 else clean
         if snippet:
-            self.notify_user("JASPER Task Complete", snippet, level="success")
+            active_tab = self.page_stack.currentIndex()
+            tab_titles = {
+                0: "Response Generated",
+                1: "Task Completed",
+                2: "Scheduled Task Updated",
+                3: "Plugin Action Finished",
+                4: "File Action Done",
+                5: "Git Action Done",
+                6: "Settings Saved",
+            }
+            title = tab_titles.get(active_tab, "Response Generated")
+            self.notify_user(title, snippet, level="success")
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
@@ -1193,4 +1218,13 @@ class MainWindow(QMainWindow):
                             self._set_attachment(str(paste_path))
                             return True
         return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "toast_banner") and not self.toast_banner.isHidden():
+            parent = self.toast_banner.parentWidget()
+            if parent:
+                pw = parent.width()
+                tw = self.toast_banner.width()
+                self.toast_banner.move((pw - tw) // 2, 12)
 

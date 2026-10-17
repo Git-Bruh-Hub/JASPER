@@ -174,10 +174,6 @@ class BrowserController:
         launch_kwargs: dict[str, Any] = {
             "user_data_dir": str(profile_path),
             "headless": self.config.headless,
-            "viewport": {
-                "width": self.config.viewport_width,
-                "height": self.config.viewport_height,
-            },
             "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -187,8 +183,19 @@ class BrowserController:
                 "--disable-blink-features=AutomationControlled",
                 "--start-maximized",
             ],
+            "ignore_default_args": ["--no-sandbox"],
             "accept_downloads": True,
         }
+
+        # In interactive (headed) mode, allow the webpage to dynamically fill the window
+        # when maximized instead of enforcing a constrained fixed viewport resolution.
+        if not self.config.headless:
+            launch_kwargs["no_viewport"] = True
+        else:
+            launch_kwargs["viewport"] = {
+                "width": self.config.viewport_width,
+                "height": self.config.viewport_height,
+            }
 
         if desired_channel != "chromium":
             launch_kwargs["channel"] = desired_channel

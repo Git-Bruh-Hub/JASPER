@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -46,17 +46,17 @@ class SessionItemWidget(QPushButton):
         self._apply_styling()
 
     def _apply_styling(self) -> None:
-        # Truncate title if long
+        # Truncate title if long to fit sidebar width comfortably
         display_title = self.raw_title
-        if len(display_title) > 26:
-            display_title = display_title[:24].rstrip() + "…"
+        if len(display_title) > 22:
+            display_title = display_title[:20].rstrip() + "…"
         prefix = "📌 " if self.is_pinned else "💬 "
         self.setText(f"{prefix}{display_title}")
         self.setToolTip(self.raw_title)
 
         border_left = "3px solid #8ee6a1" if self.is_active else "3px solid transparent"
-        bg_color = "#2a2a2a" if self.is_active else "transparent"
-        text_color = "#ffffff" if self.is_active else "#cccccc"
+        bg_color = "#282828" if self.is_active else "transparent"
+        text_color = "#ffffff" if self.is_active else "#b5b5b5"
 
         self.setStyleSheet(
             f"""
@@ -67,11 +67,11 @@ class SessionItemWidget(QPushButton):
                 border-left: {border_left};
                 border-radius: 4px;
                 color: {text_color};
-                padding: 7px 10px;
-                font-size: 9pt;
+                padding: 6px 8px;
+                font-size: 8.5pt;
             }}
             QPushButton:hover {{
-                background-color: #242424;
+                background-color: #222222;
                 color: #ffffff;
             }}
             """
@@ -147,73 +147,124 @@ class SessionDrawer(QFrame):
         self.setObjectName("sessionDrawer")
         self.is_collapsed = False
         self.active_session_id: str | None = None
+        self._raw_sessions: list[dict] = []
+        self._sort_mode = "recent"
+        self._filter_mode = "all"
         self._items: dict[str, SessionItemWidget] = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.setFixedWidth(240)
+        if self.parentWidget() is None:
+            self.setFixedWidth(240)
         self.setStyleSheet(
             """
             QFrame#sessionDrawer {
-                background-color: #191919;
-                border-right: 1px solid #2b2b2b;
+                background-color: transparent;
+                border: none;
             }
             """
         )
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(4)
 
-        # Header bar with + New Chat and Collapse Toggle
+        # Header bar matching user's screenshot: "Chat History ▾" ... ≡ ✏
         self.header_layout = QHBoxLayout()
-        self.header_layout.setContentsMargins(0, 0, 0, 0)
-        self.header_layout.setSpacing(6)
+        self.header_layout.setContentsMargins(2, 2, 2, 2)
+        self.header_layout.setSpacing(2)
 
-        self.new_chat_btn = QPushButton("+ New Chat")
-        self.new_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.new_chat_btn.setStyleSheet(
+        self.dropdown_btn = QPushButton("Chat History ▾")
+        self.dropdown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dropdown_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #222222;
-                border: 1px solid #333333;
-                border-radius: 6px;
-                color: #ffffff;
-                font-weight: 600;
-                padding: 7px 12px;
-                text-align: center;
-                font-size: 9pt;
+                background: transparent;
+                border: none;
+                color: #e0e0e0;
+                font-size: 8.5pt;
+                font-weight: 700;
+                text-align: left;
+                padding: 4px 2px;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
-                background-color: #2a2a2a;
-                border-color: #8ee6a1;
                 color: #8ee6a1;
             }
             """
         )
-        self.new_chat_btn.clicked.connect(self.new_chat_requested.emit)
-        self.header_layout.addWidget(self.new_chat_btn, 1)
+        self.dropdown_btn.clicked.connect(self.toggle_collapse)
+        self.header_layout.addWidget(self.dropdown_btn, 1)
 
-        self.toggle_btn = QPushButton("◀")
-        self.toggle_btn.setToolTip("Collapse Chat History")
-        self.toggle_btn.setFixedSize(28, 28)
-        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_btn.setStyleSheet(
+        self.btn_more = QPushButton("···")
+        self.btn_more.setToolTip("Chat History Options")
+        self.btn_more.setFixedSize(22, 22)
+        self.btn_more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_more.setStyleSheet(
             """
             QPushButton {
-                background-color: transparent;
-                border: 1px solid #333333;
-                border-radius: 6px;
-                color: #888888;
-                font-size: 8pt;
+                background: transparent;
+                border: none;
+                color: #777777;
+                font-size: 10pt;
+                font-weight: bold;
+                border-radius: 4px;
             }
             QPushButton:hover {
-                background-color: #242424;
                 color: #ffffff;
+                background: #282828;
             }
             """
         )
-        self.toggle_btn.clicked.connect(self.toggle_collapse)
-        self.header_layout.addWidget(self.toggle_btn)
+        self.btn_more.clicked.connect(self._show_options_menu)
+        self.header_layout.addWidget(self.btn_more)
+
+        self.btn_filter = QPushButton("≡")
+        self.btn_filter.setToolTip("Filter & Sort Chats")
+        self.btn_filter.setFixedSize(22, 22)
+        self.btn_filter.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_filter.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #777777;
+                font-size: 11pt;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+                background: #282828;
+            }
+            """
+        )
+        self.btn_filter.clicked.connect(self._show_filter_menu)
+        self.header_layout.addWidget(self.btn_filter)
+
+        self.new_chat_btn = QPushButton("✏")
+        self.new_chat_btn.setToolTip("New Chat")
+        self.new_chat_btn.setFixedSize(22, 22)
+        self.new_chat_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.new_chat_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #8ee6a1;
+                font-size: 9.5pt;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+                background: #253828;
+            }
+            """
+        )
+        self.new_chat_btn.clicked.connect(self.new_chat_requested.emit)
+        self.header_layout.addWidget(self.new_chat_btn)
+
+        # Retain toggle_btn attribute for backwards compatibility with tests
+        self.toggle_btn = self.dropdown_btn
         main_layout.addLayout(self.header_layout)
 
         # Scrollable container for sessions
@@ -227,14 +278,17 @@ class SessionDrawer(QFrame):
             }
             QScrollBar:vertical {
                 border: none;
-                background: #191919;
-                width: 6px;
+                background: transparent;
+                width: 4px;
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
                 background: #333333;
                 min-height: 20px;
-                border-radius: 3px;
+                border-radius: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #4a4a4a;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
@@ -245,19 +299,19 @@ class SessionDrawer(QFrame):
         self.content_widget = QWidget()
         self.content_widget.setStyleSheet("background: transparent;")
         self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(0, 4, 0, 0)
-        self.content_layout.setSpacing(4)
+        self.content_layout.setContentsMargins(0, 2, 0, 0)
+        self.content_layout.setSpacing(2)
 
         # Section labels
         self.pinned_section_label = QLabel("PINNED")
-        self.pinned_section_label.setStyleSheet("color: #777777; font-size: 8pt; font-weight: 700; padding: 4px 6px 2px 6px; letter-spacing: 1px;")
+        self.pinned_section_label.setStyleSheet("color: #666666; font-size: 7.5pt; font-weight: 700; padding: 4px 4px 1px 4px; letter-spacing: 0.8px;")
         self.content_layout.addWidget(self.pinned_section_label)
         self.pinned_container = QVBoxLayout()
         self.pinned_container.setSpacing(2)
         self.content_layout.addLayout(self.pinned_container)
 
         self.recent_section_label = QLabel("RECENT CHATS")
-        self.recent_section_label.setStyleSheet("color: #777777; font-size: 8pt; font-weight: 700; padding: 8px 6px 2px 6px; letter-spacing: 1px;")
+        self.recent_section_label.setStyleSheet("color: #666666; font-size: 7.5pt; font-weight: 700; padding: 6px 4px 1px 4px; letter-spacing: 0.8px;")
         self.content_layout.addWidget(self.recent_section_label)
         self.recent_container = QVBoxLayout()
         self.recent_container.setSpacing(2)
@@ -267,23 +321,96 @@ class SessionDrawer(QFrame):
         self.scroll_area.setWidget(self.content_widget)
         main_layout.addWidget(self.scroll_area, 1)
 
+    def _show_options_menu(self) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            """
+            QMenu {
+                background-color: #202020;
+                color: #f1f1f1;
+                border: 1px solid #333333;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #2b4532;
+                color: #8ee6a1;
+            }
+            """
+        )
+        new_act = menu.addAction("✏  New Chat")
+        new_act.triggered.connect(self.new_chat_requested.emit)
+        menu.addSeparator()
+        collapse_act = menu.addAction("▾  Collapse All" if not self.is_collapsed else "▸  Expand All")
+        collapse_act.triggered.connect(self.toggle_collapse)
+        menu.exec(self.btn_more.mapToGlobal(QPoint(0, self.btn_more.height())))
+
+    def _show_filter_menu(self) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            """
+            QMenu {
+                background-color: #202020;
+                color: #f1f1f1;
+                border: 1px solid #333333;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #2b4532;
+                color: #8ee6a1;
+            }
+            """
+        )
+        act_recent = menu.addAction("🕒  Sort by Most Recent")
+        act_alpha = menu.addAction("🔤  Sort Alphabetically")
+        menu.addSeparator()
+        act_all = menu.addAction("💬  Show All Chats")
+        act_pinned = menu.addAction("📌  Show Pinned Only")
+
+        chosen = menu.exec(self.btn_filter.mapToGlobal(QPoint(0, self.btn_filter.height())))
+        if chosen == act_recent:
+            self._sort_mode = "recent"
+            self._refresh_display()
+        elif chosen == act_alpha:
+            self._sort_mode = "alpha"
+            self._refresh_display()
+        elif chosen == act_all:
+            self._filter_mode = "all"
+            self._refresh_display()
+        elif chosen == act_pinned:
+            self._filter_mode = "pinned"
+            self._refresh_display()
+
     def toggle_collapse(self) -> None:
         self.is_collapsed = not self.is_collapsed
         if self.is_collapsed:
-            self.setFixedWidth(44)
-            self.new_chat_btn.hide()
+            if self.parentWidget() is None:
+                self.setFixedWidth(44)
             self.scroll_area.hide()
-            self.toggle_btn.setText("▶")
-            self.toggle_btn.setToolTip("Expand Chat History")
+            self.dropdown_btn.setText("Chat History ▸")
+            self.dropdown_btn.setToolTip("Expand Chat History")
         else:
-            self.setFixedWidth(240)
-            self.new_chat_btn.show()
+            if self.parentWidget() is None:
+                self.setFixedWidth(240)
             self.scroll_area.show()
-            self.toggle_btn.setText("◀")
-            self.toggle_btn.setToolTip("Collapse Chat History")
+            self.dropdown_btn.setText("Chat History ▾")
+            self.dropdown_btn.setToolTip("Collapse Chat History")
 
     def set_sessions(self, sessions: list[dict], active_session_id: str | None = None) -> None:
         self.active_session_id = active_session_id
+        self._raw_sessions = list(sessions)
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
         self._items.clear()
 
         # Clear existing layout items
@@ -297,10 +424,22 @@ class SessionDrawer(QFrame):
             if item.widget():
                 item.widget().deleteLater()
 
+        # Apply filtering
+        display_sessions = list(self._raw_sessions)
+        if self._filter_mode == "pinned":
+            display_sessions = [s for s in display_sessions if bool(s.get("is_pinned", 0))]
+
+        # Apply sorting
+        if self._sort_mode == "alpha":
+            display_sessions.sort(key=lambda s: s.get("title", "").lower())
+        else:
+            # Sort by updated_at descending
+            display_sessions.sort(key=lambda s: str(s.get("updated_at", "")), reverse=True)
+
         has_pinned = False
         has_recent = False
 
-        for session in sessions:
+        for session in display_sessions:
             sid = session["id"]
             title = session.get("title", "Untitled Chat")
             is_pinned = bool(session.get("is_pinned", 0))

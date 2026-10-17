@@ -118,11 +118,20 @@ def test_notify_on_finished_and_approval(qapp):
         level="warning",
     )
 
-    # 2. Test notification on task finished
+    # 2. Test notification on task finished (Chat tab = Response Generated)
     window._messages.append(("JASPER", "**Summary of 7-Eleven email:** Discount voucher valid until Sunday."))
     window._on_finished()
     window.notify_user.assert_called_with(
-        "JASPER Task Complete",
+        "Response Generated",
+        "Summary of 7-Eleven email: Discount voucher valid until Sunday.",
+        level="success",
+    )
+
+    # 3. Test dynamic title when on Tasks tab (tab index 1)
+    window._select_page(1)
+    window._on_finished()
+    window.notify_user.assert_called_with(
+        "Task Completed",
         "Summary of 7-Eleven email: Discount voucher valid until Sunday.",
         level="success",
     )
