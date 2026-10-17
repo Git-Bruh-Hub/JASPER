@@ -11,7 +11,22 @@ data/voices/*
 !data/voices/.gitkeep
 .pytest_cache/
 
-graphify-out/cache/
+# Local agent machinery & knowledge graphs
+graphify-out/
+.agents/
+skills-lock.json
+security-recovery-backup/
+
+# Internal sprint, task, and handover documentation
+docs/internal/
+tasks/
+AGENTS.md
+JASPER.md
+HANDOVER.md
+PROJECT_STATE.md
+docs/planning/
+docs/intent/
+docs/specs/
 
 # Desktop autonomy workspace and test temporary directories
 workspace/

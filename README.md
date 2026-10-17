@@ -212,11 +212,12 @@ The repository implements the v0.7 Hive Mind multi-agent architecture (Slices 1�
 
 > **Security Note:** Desktop autonomous execution (`/auto`) is **disabled by default** in normal desktop startup (`app/desktop.py`) and fails closed unless a coordinator is explicitly injected in a controlled test harness.
 
-For complete architectural and development documentation, see the Project Brain:
-- [PROJECT_STATE.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/PROJECT_STATE.md) — Ground-truth verified project state and tests
-- [ARCHITECTURE.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/ARCHITECTURE.md) — Full system architecture and request flow
-- [PROJECT_VISION.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/PROJECT_VISION.md) — Long-term project vision and safety principles
-- [ROADMAP.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/ROADMAP.md) — Dependency-aware development milestones
-- [DECISIONS.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/DECISIONS.md) — Architecture decision records (ADRs)
-- [AGENTS.md](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/AGENTS.md) — Mandatory development rules for AI agents
+## Documentation
+
+For technical architecture, design principles, and engineering decisions:
+- [Architecture & Concurrency Flow](docs/ARCHITECTURE.md) — System request flow, cognitive modes, and capability boundaries
+- [Architecture Decision Records (ADRs)](docs/DECISIONS.md) — 20 documented decisions on security, state machines, and fail-closed policies
+- [Project Vision & Core Principles](docs/PROJECT_VISION.md) — Local-first privacy, bounded autonomy, and permission gating
+- [Development Roadmap](docs/ROADMAP.md) — Planned capabilities and milestone tracking
+- [Windows Standalone Packaging](docs/deployment/windows_packaging.md) — Instructions for building the standalone PyInstaller release
 

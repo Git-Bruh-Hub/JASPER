@@ -30,6 +30,7 @@ from app.ui.approval_dialog import ApprovalDialog
 from app.ui.markdown_renderer import markdown_to_html
 from app.ui.plugins_workspace import PluginsWorkspace
 from app.ui.scheduled_workspace import ScheduledWorkspace
+from app.ui.session_drawer import SessionDrawer
 from app.ui.settings_workspace import SettingsWorkspace
 from app.ui.styles import APP_STYLE
 from app.ui.tasks_workspace import TasksWorkspace
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
         self._watch_timer.timeout.connect(self._grab_watch_frame)
         self._ask_for_approval = True
         self._selected_model = "qwen3:8b"
+        self._active_session_id: str | None = None
 
         # Periodic status refresh (every 30 seconds)
         self._status_timer = QTimer(self)
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_worker()
         self._setup_tray()
+        self._init_session()
         self.request_refresh_status.emit()
 
     def _build_ui(self) -> None:
@@ -174,8 +177,21 @@ class MainWindow(QMainWindow):
 
     def _build_pages(self) -> None:
         self.chat_page = QWidget()
-        chat_layout = QVBoxLayout(self.chat_page)
-        chat_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout = QHBoxLayout(self.chat_page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+
+        self.session_drawer = SessionDrawer(self)
+        self.session_drawer.new_chat_requested.connect(self._on_new_chat_clicked)
+        self.session_drawer.session_selected.connect(self._on_session_selected)
+        self.session_drawer.session_renamed.connect(self._on_session_renamed)
+        self.session_drawer.session_pinned.connect(self._on_session_pinned)
+        self.session_drawer.delete_session_requested.connect(self._on_session_deleted)
+        page_layout.addWidget(self.session_drawer)
+
+        chat_container = QWidget()
+        chat_layout = QVBoxLayout(chat_container)
+        chat_layout.setContentsMargins(14, 0, 0, 0)
         chat_layout.setSpacing(8)
         header = QHBoxLayout()
         title = QLabel("Conversation / Task")
@@ -271,6 +287,7 @@ class MainWindow(QMainWindow):
         composer_layout.addWidget(self.send_button)
 
         chat_layout.addWidget(composer)
+        page_layout.addWidget(chat_container, 1)
         self.chat_page.setAcceptDrops(True)
 
         # Stack Pages (Total 7 pages)
@@ -603,6 +620,27 @@ class MainWindow(QMainWindow):
                 display_text = f"{text}\n\n👁 live screen ({_Path(image_path).name})"
             else:
                 display_text = f"{text}\n\n📎 {_Path(image_path).name}"
+
+        # Ensure active session exists and auto-title new sessions on first prompt
+        if hasattr(self, "_active_session_id") and hasattr(self, "worker") and hasattr(self.worker, "jasper"):
+            memory = getattr(self.worker.jasper, "memory", None)
+            if memory is not None and hasattr(memory, "create_session"):
+                if not self._active_session_id:
+                    new_sess = memory.create_session("New Chat")
+                    self._active_session_id = new_sess["id"]
+                    self._refresh_sessions_list()
+
+                # Check for auto-titling first prompt
+                sess = memory.get_session(self._active_session_id)
+                if sess and sess.get("title") in ("New Chat", "Untitled Chat"):
+                    clean = text.strip().replace("\n", " ")
+                    if len(clean) > 35:
+                        clean = clean[:32].rstrip() + "…"
+                    memory.update_session(self._active_session_id, title=clean, touch_updated=True)
+                    self._refresh_sessions_list()
+
+                self.worker.active_session_id = self._active_session_id
+
         self.worker.begin_request()
         self._append_message("You", display_text)
         self.input.clear()
@@ -781,6 +819,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_finished(self) -> None:
         self._set_busy(False)
+        self._refresh_sessions_list()
         if hasattr(self, "tasks_page"):
             self.tasks_page.task_completed()
 
@@ -882,6 +921,112 @@ class MainWindow(QMainWindow):
         self.conversation.setHtml("<br><br>".join(blocks))
         scrollbar = self.conversation.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    # ------------------------------------------------------------------
+    # Chat Session Management
+    # ------------------------------------------------------------------
+
+    def _init_session(self) -> None:
+        """Initialize active session from memory or create initial session."""
+        if not hasattr(self, "worker") or self.worker is None:
+            return
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is None or not hasattr(memory, "list_sessions"):
+            return
+        try:
+            sessions = memory.list_sessions()
+            if sessions:
+                self._switch_to_session(sessions[0]["id"])
+            else:
+                new_sess = memory.create_session("New Chat")
+                self._switch_to_session(new_sess["id"])
+            self._refresh_sessions_list()
+        except Exception as exc:
+            _LOG.warning("Failed to initialize chat session: %s", exc)
+
+    def _refresh_sessions_list(self) -> None:
+        if not hasattr(self, "worker") or self.worker is None:
+            return
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is None or not hasattr(memory, "list_sessions"):
+            return
+        try:
+            sessions = memory.list_sessions()
+            if hasattr(self, "session_drawer"):
+                self.session_drawer.set_sessions(sessions, self._active_session_id)
+        except Exception as exc:
+            _LOG.warning("Failed to refresh sessions list: %s", exc)
+
+    def _switch_to_session(self, session_id: str) -> None:
+        self._active_session_id = session_id
+        if hasattr(self, "worker") and self.worker is not None:
+            self.worker.active_session_id = session_id
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "session_messages"):
+            try:
+                raw_msgs = memory.session_messages(session_id)
+                self._messages = []
+                for role, content in raw_msgs:
+                    sender = "You" if role == "user" else "JASPER"
+                    self._messages.append((sender, content))
+                self._render_conversation()
+            except Exception as exc:
+                _LOG.warning("Failed to load messages for session %s: %s", session_id, exc)
+        if hasattr(self, "session_drawer"):
+            self.session_drawer.set_active_session(session_id)
+
+    @Slot()
+    def _on_new_chat_clicked(self) -> None:
+        if self.busy:
+            return
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "create_session"):
+            new_sess = memory.create_session("New Chat")
+            self._switch_to_session(new_sess["id"])
+            self._refresh_sessions_list()
+            self.input.clear()
+            self.input.setFocus()
+
+    @Slot(str)
+    def _on_session_selected(self, session_id: str) -> None:
+        if self.busy or session_id == self._active_session_id:
+            return
+        self._switch_to_session(session_id)
+
+    @Slot(str, str)
+    def _on_session_renamed(self, session_id: str, new_title: str) -> None:
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "update_session"):
+            memory.update_session(session_id, title=new_title, touch_updated=False)
+            self._refresh_sessions_list()
+
+    @Slot(str, bool)
+    def _on_session_pinned(self, session_id: str, is_pinned: bool) -> None:
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "update_session"):
+            memory.update_session(session_id, is_pinned=is_pinned, touch_updated=False)
+            self._refresh_sessions_list()
+
+    @Slot(str)
+    def _on_session_deleted(self, session_id: str) -> None:
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "delete_session"):
+            memory.delete_session(session_id)
+            if self._active_session_id == session_id:
+                remaining = memory.list_sessions()
+                if remaining:
+                    self._switch_to_session(remaining[0]["id"])
+                else:
+                    new_sess = memory.create_session("New Chat")
+                    self._switch_to_session(new_sess["id"])
+            self._refresh_sessions_list()
 
     def closeEvent(self, event) -> None:
         if self._tray is not None:

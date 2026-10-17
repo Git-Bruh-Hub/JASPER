@@ -342,18 +342,31 @@ class Orchestrator:
             on_chunk(part)
             await asyncio.sleep(0.035)
 
+    def _memory_add(self, role: str, content: str, session_id: str | None = None) -> None:
+        try:
+            self.memory.add(role, content, session_id=session_id)
+        except TypeError:
+            self.memory.add(role, content)
+
+    def _memory_recent(self, limit: int, session_id: str | None = None) -> list[tuple[str, str]]:
+        try:
+            return self.memory.recent(limit, session_id=session_id)
+        except TypeError:
+            return self.memory.recent(limit)
+
     async def respond(
         self,
         user_text: str,
         on_chunk: Callable[[str], None] | None = None,
         image_path: str | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        session_id: str | None = None,
     ) -> str:
-        self.memory.add("user", user_text)
+        self._memory_add("user", user_text, session_id=session_id)
         memory_command = self.memory_manager.parse_command(user_text)
         if memory_command is not None:
             answer = self.memory_manager.handle_command(memory_command)
-            self.memory.add("assistant", answer)
+            self._memory_add("assistant", answer, session_id=session_id)
             await self._emit_local_response(answer, on_chunk)
             self.log.info("memory command handled action=%s", memory_command.action)
             return answer
@@ -361,7 +374,7 @@ class Orchestrator:
             info = _system_observation_tool_result(self.registry, self.permissions)
             self.log.info("forced system observation for direct fact query")
             answer = _format_system_fact_answer(user_text, info)
-            self.memory.add("assistant", answer)
+            self._memory_add("assistant", answer, session_id=session_id)
             await self._emit_local_response(answer, on_chunk)
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
@@ -371,7 +384,7 @@ class Orchestrator:
             info = _system_observation_tool_result(self.registry, self.permissions)
             answer = render_cpu_explanation(user_text, info)
             if answer is not None:
-                self.memory.add("assistant", answer)
+                self._memory_add("assistant", answer, session_id=session_id)
                 await self._emit_local_response(answer, on_chunk)
                 self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
                 return answer
@@ -410,7 +423,7 @@ class Orchestrator:
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
-        recent_history = self.memory.recent(MAX_HISTORY_MESSAGES)
+        recent_history = self._memory_recent(MAX_HISTORY_MESSAGES, session_id=session_id)
         if image_path:
             # Exclude prior visual descriptions so the chat model is not anchored to earlier screens
             recent_history = [
@@ -471,13 +484,13 @@ class Orchestrator:
                 cancel_callback=cancel_callback,
                 max_turns=effective_max_turns,
             )
-            self.memory.add("assistant", answer)
+            self._memory_add("assistant", answer, session_id=session_id)
             await self._emit_local_response(answer, on_chunk)
             return answer
 
         answer = await self.engine.run(mode, messages, user_text, on_chunk, cancel_callback=cancel_callback)
 
-        self.memory.add("assistant", answer)
+        self._memory_add("assistant", answer, session_id=session_id)
         return answer
 
     async def _run_model_loop(self, messages: list[dict[str, Any]], system_prompt: str | None, use_tools: bool, mode: CognitiveMode, user_text: str, on_chunk: Callable[[str], None] | None = None, cancel_callback: Callable[[], bool] | None = None) -> str:

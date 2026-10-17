@@ -142,14 +142,17 @@ class JasperWorker(QObject):
             self.response_stream.emit(chunk)
 
     @Slot(str)
-    def send_text(self, text: str) -> None:
+    @Slot(str, str)
+    def send_text(self, text: str, session_id: str | None = None) -> None:
         self.status_changed.emit("ACTIVE")
+        sid = session_id or getattr(self, "active_session_id", None)
         try:
             answer = self._request_control.run(
                 self.jasper.respond(
                     text,
                     on_chunk=self._emit_stream_chunk,
                     cancel_callback=self._request_control.is_cancelled,
+                    session_id=sid,
                 )
             )
             if not self._request_control.is_cancelled():
@@ -165,9 +168,11 @@ class JasperWorker(QObject):
             self.finished.emit()
 
     @Slot(str, str)
-    def send_text_with_image(self, text: str, image_path: str) -> None:
+    @Slot(str, str, str)
+    def send_text_with_image(self, text: str, image_path: str, session_id: str | None = None) -> None:
         """Send text alongside an attached image through the vision-to-text bridge."""
         self.status_changed.emit("ACTIVE")
+        sid = session_id or getattr(self, "active_session_id", None)
         try:
             answer = self._request_control.run(
                 self.jasper.respond(
@@ -175,6 +180,7 @@ class JasperWorker(QObject):
                     on_chunk=self._emit_stream_chunk,
                     image_path=image_path,
                     cancel_callback=self._request_control.is_cancelled,
+                    session_id=sid,
                 )
             )
             if not self._request_control.is_cancelled():
