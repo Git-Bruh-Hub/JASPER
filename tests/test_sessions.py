@@ -239,6 +239,15 @@ def test_main_window_session_integration(qapp, tmp_path):
     assert new_sid != initial_sid
     assert window._messages == []
 
+    # Verify Chat History header stays at the exact same top position when open and closed
+    y_open = window.session_drawer.dropdown_btn.mapTo(window, window.session_drawer.dropdown_btn.rect().topLeft()).y()
+    window.session_drawer.toggle_collapse()
+    qapp.processEvents()
+    y_closed = window.session_drawer.dropdown_btn.mapTo(window, window.session_drawer.dropdown_btn.rect().topLeft()).y()
+    assert y_open == y_closed
+    window.session_drawer.toggle_collapse()
+    qapp.processEvents()
+
     # Clean up window
     window.close()
 

@@ -321,6 +321,13 @@ class SessionDrawer(QFrame):
         self.scroll_area.setWidget(self.content_widget)
         main_layout.addWidget(self.scroll_area, 1)
 
+        # Empty spacer to keep header pinned at the exact top when scroll_area is collapsed
+        self.empty_spacer = QWidget()
+        self.empty_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.empty_spacer.setStyleSheet("background: transparent;")
+        main_layout.addWidget(self.empty_spacer, 1)
+        self.empty_spacer.hide()
+
     def _show_options_menu(self) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -396,11 +403,13 @@ class SessionDrawer(QFrame):
             if self.parentWidget() is None:
                 self.setFixedWidth(44)
             self.scroll_area.hide()
+            self.empty_spacer.show()
             self.dropdown_btn.setText("Chat History ▸")
             self.dropdown_btn.setToolTip("Expand Chat History")
         else:
             if self.parentWidget() is None:
                 self.setFixedWidth(240)
+            self.empty_spacer.hide()
             self.scroll_area.show()
             self.dropdown_btn.setText("Chat History ▾")
             self.dropdown_btn.setToolTip("Collapse Chat History")
