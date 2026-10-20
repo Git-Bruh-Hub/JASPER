@@ -43,7 +43,7 @@ def get_default_desktop_workspace() -> Path:
     return workspace
 
 
-def register_desktop_tools(registry: ToolRegistry) -> None:
+def register_desktop_tools(registry: ToolRegistry, vision: Any = None) -> None:
     """Register safe autonomous desktop tools into the provided registry."""
     existing_tools = {t.name for t in registry.list()}
 
@@ -321,13 +321,58 @@ def register_desktop_tools(registry: ToolRegistry) -> None:
 
     # 8. Desktop Take Screenshot (Risk.READ -> read-only desktop observation)
     if "desktop_take_screenshot" not in existing_tools:
-        from app.vision.capture import desktop_take_screenshot
+        from app.vision.capture import capture_active_screen
+
+        async def _desktop_take_screenshot(question: str = "") -> dict[str, Any]:
+            path = capture_active_screen()
+            res = {
+                "status": "success",
+                "action": "desktop_take_screenshot",
+                "path": str(path),
+                "filename": path.name,
+            }
+            vm = vision
+            if vm is None:
+                try:
+                    from app.main import build_vision_manager
+                    vm = build_vision_manager()
+                except Exception:
+                    vm = None
+
+            if vm is not None:
+                try:
+                    prompt = question.strip() if question and question.strip() else (
+                        "Describe everything visible across the entire screen in detail, "
+                        "including all open windows, applications, text, and active content."
+                    )
+                    analysis = await vm.analyze(path, prompt=prompt)
+                    res["observation"] = analysis.answer
+                except Exception as exc:
+                    _LOG.debug("Automatic vision analysis for screenshot skipped or failed: %s", exc)
+                    res["observation"] = f"Screenshot saved to {path.name}."
+            else:
+                res["observation"] = f"Screenshot saved to {path.name}."
+            return res
+
         registry.register(Tool(
             name="desktop_take_screenshot",
-            description="Capture the user's primary desktop display and return the saved image file path for visual analysis.",
+            description=(
+                "Capture the user's desktop display and visually analyze what is visible on the screen. "
+                "Use this tool when the user asks what is on their screen, wants a screenshot described, "
+                "or wants to observe the current desktop."
+            ),
             risk=Risk.READ,
-            handler=desktop_take_screenshot,
-            parameters={"type": "object", "properties": {}},
+            handler=_desktop_take_screenshot,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "Optional specific question or element to check on screen. If omitted, the full screen is analyzed.",
+                    },
+                },
+                "required": [],
+            },
             resource_extractor=lambda _: "desktop://screen",
             requires_filesystem=False,
         ))
@@ -349,7 +394,7 @@ def build_desktop_autonomy(
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Register write and browser tools in orchestrator's shared tool registry
-    register_desktop_tools(worker.jasper.registry)
+    register_desktop_tools(worker.jasper.registry, vision=getattr(worker, "vision", None))
 
     permissions = ScopedPermissionManager(
         workspace_root=workspace,

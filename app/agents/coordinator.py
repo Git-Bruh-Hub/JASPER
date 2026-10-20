@@ -834,9 +834,13 @@ class Coordinator:
                         fallback_parts.append(msg)
                     elif tool_name == "desktop_take_screenshot":
                         img_path = res_data.get("path", "")
+                        obs = res_data.get("observation", "")
                         msg = f"📸 Captured desktop screen: `{img_path}`"
                         activity_badges.append(msg)
-                        fallback_parts.append(msg)
+                        if obs and obs != f"Screenshot saved to {res_data.get('filename', '')}.":
+                            fallback_parts.append(f"📸 Screen Visual Observation:\n{obs}")
+                        else:
+                            fallback_parts.append(msg)
                     else:
                         activity_badges.append(f"🔧 Tool `{tool_name}`: completed")
                         fallback_parts.append(f"[Tool {tool_name}]: {raw_res}")

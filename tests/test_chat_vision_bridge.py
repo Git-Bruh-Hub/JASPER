@@ -445,3 +445,71 @@ def test_set_attachment_then_clear_resets_state(qapp, tmp_path: Path) -> None:
     finally:
         thread.quit()
         thread.wait(2000)
+
+
+@pytest.mark.asyncio
+async def test_respond_purges_stale_vision_refusals_from_history(tmp_path: Path) -> None:
+    """When an image is attached, prior hallucinated refusal messages in recent history
+    must be purged so the text model is not primed to repeat refusals."""
+    image = tmp_path / "snip_test.png"
+    image.write_bytes(PNG_BYTES)
+
+    vm = _stub_vision_manager()
+    orchestrator = _make_orchestrator(vision=vm, tmp_path=tmp_path)
+
+    # Prime memory with a previous turn where the model claimed it cannot view images
+    orchestrator.memory.add("user", "yes what do you see then?")
+    orchestrator.memory.add(
+        "assistant",
+        "I currently cannot view or analyze images directly, as I don't have access to visual data."
+    )
+
+    captured_messages: list[list[dict]] = []
+
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
+        captured_messages.append(messages)
+        return {"message": {"role": "assistant", "content": "I see the test image."}}
+
+    with patch.object(orchestrator.models.local, "chat", side_effect=fake_chat):
+        await orchestrator.respond("what ddo you see now?", image_path=str(image))
+
+    assert captured_messages, "Provider should have been called"
+    all_msgs = captured_messages[0]
+
+    # Verify stale refusal was purged from history
+    for msg in all_msgs:
+        if msg.get("role") == "assistant":
+            assert "cannot view or analyze images directly" not in msg.get("content", "")
+
+    # Verify anti-refusal directive is present in system instructions
+    system_contents = [m["content"] for m in all_msgs if m.get("role") == "system"]
+    combined_system = "\n".join(system_contents)
+    assert "NEVER state that you cannot view, see, or analyze images" in combined_system
+    assert "snip_test.png" in combined_system
+
+    # Verify model user turn has provenance
+    user_msgs = [m for m in all_msgs if m.get("role") == "user"]
+    assert any("[Attached image: snip_test.png]" in m["content"] for m in user_msgs)
+
+
+@pytest.mark.asyncio
+async def test_desktop_take_screenshot_with_vision_analysis(tmp_path: Path) -> None:
+    """desktop_take_screenshot registered in desktop_wiring automatically analyzes
+    the captured screen when a vision manager is available."""
+    from app.agents.desktop_wiring import register_desktop_tools
+    from app.tools.registry import ToolRegistry
+
+    vm = _stub_vision_manager()
+    reg = ToolRegistry()
+    register_desktop_tools(reg, vision=vm)
+
+    tool = reg.get("desktop_take_screenshot")
+    assert tool is not None
+
+    with patch("app.vision.capture.DATA_DIR", tmp_path):
+        res = await tool.handler(question="What is on screen?")
+
+    assert res["status"] == "success"
+    assert "observation" in res
+    assert res["observation"] == _StubVisionProvider.OBSERVATION
+

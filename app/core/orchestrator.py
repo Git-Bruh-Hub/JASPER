@@ -56,11 +56,12 @@ Tool use:
 - After receiving tool results, answer using those results.
 - Never claim a tool ran unless its result confirms it.
 
-Vision:
-- You have a read-only image inspection tool.
-- Use it ONLY when the user explicitly mentions an image file path or asks you to look at, describe, or analyze a specific image file on their computer.
-- Do not guess image paths. If the user mentions an image but does not provide a path, ask them for the exact file path.
-- Do not use vision for text-only questions.
+Vision and Screen Awareness:
+- You have multimodal vision awareness. When an image or screen snip is attached, or when a screen capture tool runs, the vision system inspects the image and provides the visual observation in your context.
+- When an attached image or screen observation is provided, treat it as what you currently see with your own eyes.
+- NEVER state that you cannot view, see, or analyze images or screenshots when a visual observation is provided.
+- Describe what is visible on the screen or image directly and concisely.
+- If the user asks you to inspect an image file without an attached image or file path, you can use the inspect_image tool or desktop_take_screenshot tool.
 - After receiving visual observations, answer using those observations. Do not add details that are not in the visual observation.
 
 Safety:
@@ -425,10 +426,19 @@ class Orchestrator:
             messages.append({"role": "system", "content": memory_context})
         recent_history = self._memory_recent(MAX_HISTORY_MESSAGES, session_id=session_id)
         if image_path:
-            # Exclude prior visual descriptions so the chat model is not anchored to earlier screens
+            # Exclude prior visual descriptions and prior hallucinated vision refusals
+            # so the chat model is neither anchored to earlier screens nor primed to repeat refusals
+            stale_markers = (
+                "Your screen shows", "What's on your screen", "What’s on your screen",
+                "live screen (", "CURRENT ATTACHED SCREEN",
+                "cannot view or analyze images", "cannot view or analyze",
+                "cannot see your screen directly", "don't have access to visual",
+                "don’t have access to visual", "desktop screenshot function",
+                "The screenshot has been saved to your desktop",
+            )
             recent_history = [
                 (role, content) for role, content in recent_history
-                if not any(marker in content for marker in ("Your screen shows", "What's on your screen", "What’s on your screen", "live screen (", "CURRENT ATTACHED SCREEN"))
+                if not any(marker in content for marker in stale_markers)
             ]
         messages.extend({"role": role, "content": content} for role, content in recent_history)
         if _requires_system_grounding(user_text):
@@ -455,6 +465,9 @@ class Orchestrator:
                     f"{vision_observation}\n"
                     f"{tasks_section}\n"
                     "INSTRUCTIONS:\n"
+                    "- You HAVE direct visual awareness of this image via the observation above.\n"
+                    "- Answer what you see directly without any disclaimers.\n"
+                    "- NEVER state that you cannot view, see, or analyze images or screenshots.\n"
                     "- Prioritize this visual observation over past conversational memory.\n"
                     "- Answer the user's question directly based on what is visually observed.\n"
                     "- Describe all windows, applications, text, and visual content reported.\n"
@@ -488,7 +501,12 @@ class Orchestrator:
             await self._emit_local_response(answer, on_chunk)
             return answer
 
-        answer = await self.engine.run(mode, messages, user_text, on_chunk, cancel_callback=cancel_callback)
+        user_text_for_model = (
+            f"{user_text}\n\n[Attached image: {Path(image_path).name}]"
+            if image_path
+            else user_text
+        )
+        answer = await self.engine.run(mode, messages, user_text_for_model, on_chunk, cancel_callback=cancel_callback)
 
         self._memory_add("assistant", answer, session_id=session_id)
         return answer
