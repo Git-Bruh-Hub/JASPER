@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_worker()
         self._setup_tray()
+        self._setup_shortcuts()
         self._init_session()
         self.request_refresh_status.emit()
 
@@ -334,6 +335,8 @@ class MainWindow(QMainWindow):
 
         self.settings_page = SettingsWorkspace()
         self.settings_page.settings_saved.connect(self._on_settings_saved)
+        if hasattr(self.settings_page, "restart_requested"):
+            self.settings_page.restart_requested.connect(self.restart_application)
         self.page_stack.addWidget(self.settings_page)  # 6: Settings
 
         # VisionWorkspace preserved as attribute for direct tests and tools
@@ -435,6 +438,11 @@ class MainWindow(QMainWindow):
         self._tray.activated.connect(self._tray_activated)
         self._tray.show()
 
+    def _setup_shortcuts(self) -> None:
+        from PySide6.QtGui import QKeySequence, QShortcut
+        self._reload_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
+        self._reload_shortcut.activated.connect(self.restart_application)
+
     def _build_tray_menu(self):
         from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
@@ -442,10 +450,34 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.showNormal)
         menu.addAction(open_action)
         menu.addSeparator()
+        restart_action = QAction("🔄 Restart / Reload JASPER", self)
+        restart_action.triggered.connect(self.restart_application)
+        menu.addAction(restart_action)
+        menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         menu.addAction(exit_action)
         return menu
+
+    def restart_application(self) -> None:
+        """Restarts the JASPER desktop application immediately to load updated source code."""
+        import sys
+        from pathlib import Path
+        from PySide6.QtCore import QProcess
+        from PySide6.QtWidgets import QApplication
+
+        _LOG.info("Restarting JASPER application to reload updated source code...")
+        if self._tray:
+            self._tray.hide()
+        if hasattr(self.worker, "cancel_current"):
+            self.worker.cancel_current()
+
+        desktop_script = Path(__file__).resolve().parent.parent / "desktop.py"
+        app_args = [str(desktop_script)] if desktop_script.exists() else ["-m", "app.desktop"]
+
+        QProcess.startDetached(sys.executable, app_args)
+        self._shutdown_clean = True
+        QApplication.quit()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

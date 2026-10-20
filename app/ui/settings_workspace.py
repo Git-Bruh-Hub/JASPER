@@ -34,6 +34,7 @@ class SettingsWorkspace(QWidget):
     """Desktop workspace for configuring local models, Ollama host, and autonomy limits."""
 
     settings_saved = Signal(dict)
+    restart_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -452,6 +453,14 @@ class SettingsWorkspace(QWidget):
         self.label_feedback.setStyleSheet("color: #8ee6a1; font-weight: 600; font-size: 9.5pt;")
         layout.addWidget(self.label_feedback)
         layout.addStretch(1)
+
+        self.btn_restart = QPushButton("🔄 Reload App (Ctrl+R)")
+        self.btn_restart.setToolTip("Restart JASPER immediately to reload any updated source code")
+        self.btn_restart.setStyleSheet(
+            "background: #232d25; border: 1px solid #366141; border-radius: 6px; color: #8ee6a1; padding: 8px 14px; font-weight: 500;"
+        )
+        self.btn_restart.clicked.connect(self.restart_requested.emit)
+        layout.addWidget(self.btn_restart)
 
         self.btn_reset = QPushButton("Reset Defaults")
         self.btn_reset.setStyleSheet(

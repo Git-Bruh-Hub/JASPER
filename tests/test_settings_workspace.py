@@ -173,3 +173,41 @@ def test_settings_workspace_launch_browser_session(qapp):
         mock_thread.start.assert_called_once()
         assert "Launching browser" in widget.label_feedback.text()
 
+
+def test_settings_workspace_restart_button(qapp):
+    widget = SettingsWorkspace()
+    assert hasattr(widget, "btn_restart")
+    assert "Reload App" in widget.btn_restart.text()
+
+    restarted = []
+    widget.restart_requested.connect(lambda: restarted.append(True))
+    widget.btn_restart.click()
+    assert restarted == [True]
+
+
+def test_main_window_restart_wiring(qapp, tmp_path):
+    from PySide6.QtCore import QThread
+    from app.ui.main_window import MainWindow
+    from app.ui.worker import JasperWorker
+
+    worker = JasperWorker(coordinator=None)
+    thread = QThread()
+    window = MainWindow(worker, thread)
+
+    assert hasattr(window, "_reload_shortcut")
+    assert window._reload_shortcut.key().toString() == "Ctrl+R"
+
+    # Verify tray menu has restart action
+    tray_menu = window._build_tray_menu()
+    action_texts = [action.text() for action in tray_menu.actions()]
+    assert any("Restart / Reload JASPER" in text for text in action_texts)
+
+    # Test restart_application calls QProcess.startDetached
+    with patch("PySide6.QtCore.QProcess.startDetached") as mock_start, patch("PySide6.QtWidgets.QApplication.quit") as mock_quit:
+        window.restart_application()
+        mock_start.assert_called_once()
+        mock_quit.assert_called_once()
+
+    window.close()
+
+
