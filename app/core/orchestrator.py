@@ -496,7 +496,9 @@ class Orchestrator:
             
             self.reset_coordinator()
 
-            clean_text = re.sub(r'(?i)^/auto\s*', '', user_text).strip()
+            clean_text = re.sub(r'(?i)^/(?:auto|task|agent|autonomous)\s*', '', user_text).strip()
+            if vision_observation:
+                clean_text = f"{clean_text}\n\n[Visual Observation: {vision_observation}]"
             
             planner_adapter = self.planner_callable or PlannerAdapter(self.models, self.registry)
             executor_adapter = self.executor_callable or ExecutorAdapter(self.models, self.registry)
