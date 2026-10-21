@@ -85,6 +85,28 @@ class PluginsWorkspace(QWidget):
             "prompt": "List the files in the workspace and inspect recent project changes",
         },
         {
+            "id": "edit_file_chunk",
+            "name": "Surgical Code & Text Editor",
+            "category": "Filesystem",
+            "icon": "✂️",
+            "installed": True,
+            "badge": "Requires Approval",
+            "description": "Performs exact search-and-replace chunk edits on workspace files without full file rewrites.",
+            "suggestion": "Use for targeted bug fixes, updating configuration blocks, or modifying functions.",
+            "prompt": "Surgically edit the target block in the workspace file",
+        },
+        {
+            "id": "run_terminal_command",
+            "name": "Scoped Terminal & Shell Runner",
+            "category": "Execution",
+            "icon": "💻",
+            "installed": True,
+            "badge": "Requires Approval",
+            "description": "Executes shell commands with strict timeout limits and captures stdout/stderr. Guarded by approval gates.",
+            "suggestion": "Use for running test suites, checking git status, or executing build scripts.",
+            "prompt": "Run pytest on the test suite and summarize the results",
+        },
+        {
             "id": "system_diagnostics",
             "name": "System & Hardware Diagnostics",
             "category": "System",
@@ -96,6 +118,7 @@ class PluginsWorkspace(QWidget):
             "prompt": "Report current GPU VRAM, system RAM, and Ollama status",
         },
     ]
+
 
     REAL_SKILLS = [
         {

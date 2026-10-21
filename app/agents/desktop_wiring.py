@@ -28,7 +28,8 @@ from app.tools.browser import (
     browser_switch_tab,
     browser_type,
 )
-from app.tools.filesystem import write_text_file
+from app.tools.filesystem import edit_file_chunk, write_text_file
+from app.tools.terminal import run_terminal_command
 from app.tools.registry import Risk, Tool, ToolRegistry
 from app.ui.worker import JasperWorker
 
@@ -71,6 +72,65 @@ def register_desktop_tools(registry: ToolRegistry, vision: Any = None) -> None:
             path_argument="path",
             requires_filesystem=True,
             resource_extractor=lambda args: args.get("path", ""),
+        ))
+
+    # 1.1. Filesystem surgical edit tool (Risk.WRITE -> requires human approval)
+    if "edit_file_chunk" not in existing_tools:
+        registry.register(Tool(
+            name="edit_file_chunk",
+            description="Surgically replace a unique target chunk in an existing file within the workspace. Requires human approval.",
+            risk=Risk.WRITE,
+            handler=edit_file_chunk,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to edit within the workspace.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "The exact existing text chunk to find and replace. Must match uniquely.",
+                    },
+                    "replacement": {
+                        "type": "string",
+                        "description": "The new replacement text content.",
+                    },
+                },
+                "required": ["path", "target", "replacement"],
+            },
+            path_argument="path",
+            requires_filesystem=True,
+            resource_extractor=lambda args: args.get("path", ""),
+        ))
+
+    # 1.2. Terminal command execution tool (Risk.EXECUTE -> requires human approval)
+    if "run_terminal_command" not in existing_tools:
+        registry.register(Tool(
+            name="run_terminal_command",
+            description="Execute a shell command with a timeout and return stdout/stderr. Requires human approval.",
+            risk=Risk.EXECUTE,
+            handler=run_terminal_command,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute (e.g. 'pytest tests/test_system.py' or 'git status').",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory path. Defaults to workspace root.",
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "description": "Optional execution timeout in seconds (default 30, max 120).",
+                    },
+                },
+                "required": ["command"],
+            },
+            requires_filesystem=False,
+            resource_extractor=lambda args: f"terminal://{args.get('command', '')[:40]}",
         ))
 
     # 1.5. Browser Search (Risk.READ -> read-only web search)
@@ -398,7 +458,7 @@ def build_desktop_autonomy(
 
     permissions = ScopedPermissionManager(
         workspace_root=workspace,
-        allowed_risks=frozenset({Risk.READ, Risk.WRITE}),
+        allowed_risks=frozenset({Risk.READ, Risk.WRITE, Risk.EXECUTE}),
         actor="desktop_coordinator",
     )
 
