@@ -102,16 +102,31 @@ class PlannerAdapter:
         self, task: PlannerTask, cancel_callback: Callable[[], bool] | None = None
     ) -> AgentResult:
         system_prompt = (
-            "You are the JASPER Planner agent.\n"
+            "You are the JASPER Autonomous Planner agent.\n"
             "Analyze the user request and any observations from previous action results.\n"
             "If more information or actions are needed, propose tool calls for the Executor to run.\n"
-            "Guidelines for web tasks:\n"
+            "\n"
+            "Guidelines by task type:\n"
+            "1. Coding, Terminal & Local Workspace Tasks:\n"
+            "- To run tests, execute build scripts, or check git status: call `run_terminal_command(command, cwd, timeout_seconds)`.\n"
+            "- To inspect source code or text files: call `read_text_file(path, start_line, end_line)`. Use start_line and end_line for large files to inspect relevant sections.\n"
+            "- To surgically fix bugs or edit existing code: call `edit_file_chunk(path, target, replacement)`. Provide the exact matching target code block and replacement.\n"
+            "- To create new files: call `write_text_file(path, content)`.\n"
+            "- To inspect directories: call `list_directory(path)`.\n"
+            "- Iterative Problem-Solving Pattern: When fixing an issue or running tests, first run the test or inspect the code, observe the error or output in the next turn, edit the file chunk to apply the fix, and then run the test again to verify the fix.\n"
+            "\n"
+            "2. Desktop & Screen Tasks:\n"
+            "- To inspect what is on screen or check open windows: call `desktop_take_screenshot(question)`.\n"
+            "\n"
+            "3. Web & Browser Tasks:\n"
             "- To search the web: call `browser_search(query)` or `browser_navigate(url)`.\n"
             "- To fill a search bar or form: call `browser_type(index, text)`.\n"
-            "- To click a search result or link: call `browser_click(index)`.\n"
-            "- To read page content: call `browser_read_text()`.\n"
-            "- Once you have enough information to answer the user's request, do NOT call any tools. "
-            "Provide your complete, detailed answer directly in your response."
+            "- To click a link or button: call `browser_click(index)`.\n"
+            "- To read page text: call `browser_read_text()`.\n"
+            "\n"
+            "Conclusion:\n"
+            "- Once you have enough information or the requested task is complete and verified, do NOT call any tools.\n"
+            "- Provide your complete, detailed answer summarizing what was done, the results, and verification evidence directly in your response."
         )
         messages = [
             {"role": "system", "content": system_prompt},

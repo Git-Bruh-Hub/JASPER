@@ -333,6 +333,26 @@ class MultiAgentCoordinator(Coordinator):
                         title = data.get("title", "")
                         text = data.get("text", "")
                         parts.append(f"[Tool {tool_name}]: Page Content ({title}):\n{text}")
+                    elif "command" in data:
+                        cmd = data.get("command", "")
+                        exit_code = data.get("exit_code", 0)
+                        stdout = (data.get("stdout") or "").strip()
+                        stderr = (data.get("stderr") or "").strip()
+                        duration = data.get("duration_seconds", 0)
+                        term_lines = [f"Command `{cmd}` exited with code {exit_code} ({duration}s)."]
+                        if stdout:
+                            term_lines.append(f"STDOUT:\n{stdout}")
+                        if stderr:
+                            term_lines.append(f"STDERR:\n{stderr}")
+                        if not stdout and not stderr:
+                            term_lines.append("(No output captured)")
+                        parts.append(f"[Tool {tool_name}]: " + "\n".join(term_lines))
+                    elif "message" in data:
+                        parts.append(f"[Tool {tool_name}]: {data.get('message')}")
+                    elif "observation" in data:
+                        obs = data.get("observation", "")
+                        fname = data.get("filename") or Path(data.get("path", "")).name
+                        parts.append(f"[Tool {tool_name}]: Screenshot '{fname}' captured.\nVisual observation: {obs}")
                     elif "target" in data:
                         target = data.get("target", "")
                         parts.append(f"[Tool {tool_name}]: Target: {target}, Status: {data.get('status', 'success')}")

@@ -465,7 +465,7 @@ def build_desktop_autonomy(
     coordinator = MultiAgentCoordinator(
         registry=worker.jasper.registry,
         permissions=permissions,
-        budget=CoordinatorBudget(timeout_seconds=timeout_seconds),
+        budget=CoordinatorBudget(timeout_seconds=timeout_seconds, max_agent_rounds=24),
         workspace_root=workspace,
     )
 
