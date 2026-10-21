@@ -18,6 +18,7 @@ from app.agents.coordinator import CoordinatorState
 from app.agents.multi_agent_coordinator import MultiAgentCoordinator
 from app.agents.adapters import PlannerAdapter, ExecutorAdapter
 from app.core.response import sanitize_thinking_tags
+from app.vision.capture import requires_screen_observation
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -396,9 +397,20 @@ class Orchestrator:
         # the normal text-LLM is never called and the Worker's error-signal path
         # displays the failure to the user.  This is intentional — JASPER must
         # not answer an image question when it cannot see the image.
+        # Auto-detect screen observation intent when no image is explicitly attached
+        if not image_path and self.vision and requires_screen_observation(user_text):
+            try:
+                from app.vision.capture import capture_active_screen
+                auto_captured = capture_active_screen()
+                image_path = str(auto_captured)
+                self.log.info("Auto screen capture triggered in orchestrator path=%s", image_path)
+            except Exception as exc:
+                self.log.info("Auto screen capture unavailable in orchestrator: %s", exc)
+
         vision_observation: str | None = None
         if image_path and self.vision:
             validated = validate_image_path(image_path)
+
             # Clean, universal screen and image observation prompt
             if user_text and user_text.strip():
                 vision_prompt = (

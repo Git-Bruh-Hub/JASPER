@@ -124,23 +124,24 @@ def test_main_window_original_jasper_layout(qapp):
     thread = MagicMock(spec=QThread)
     window = MainWindow(worker, thread)
 
-    # 1. Total 7 pages preserved
-    assert window.page_stack.count() == 7
+    # 1. Total 5 pages preserved (Files and Git placeholders removed)
+    assert window.page_stack.count() == 5
 
-    # 2. Navigation items matching the original clean design
-    assert len(window.NAV_ITEMS) == 7
+    # 2. Navigation items matching the clean design
+    assert len(window.NAV_ITEMS) == 5
     assert window.NAV_ITEMS[0][1] == "Chat"
     assert window.NAV_ITEMS[1][1] == "Tasks"
     assert window.NAV_ITEMS[2][1] == "Scheduled"
     assert window.NAV_ITEMS[3][1] == "Plugins"
-    assert window.NAV_ITEMS[6][1] == "Settings"
+    assert window.NAV_ITEMS[4][1] == "Settings"
 
     # 3. Workspaces stacked correctly
     assert isinstance(window.page_stack.widget(0), type(window.chat_page))
     assert isinstance(window.page_stack.widget(1), TasksWorkspace)
     assert isinstance(window.page_stack.widget(2), ScheduledWorkspace)
     assert isinstance(window.page_stack.widget(3), PluginsWorkspace)
-    assert isinstance(window.page_stack.widget(6), SettingsWorkspace)
+    assert isinstance(window.page_stack.widget(4), SettingsWorkspace)
+
 
     # 4. Original Conversation browser directly visible
     assert hasattr(window, "conversation")

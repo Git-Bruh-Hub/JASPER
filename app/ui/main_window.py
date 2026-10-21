@@ -44,6 +44,7 @@ from app.ui.tasks_workspace import TasksWorkspace
 from app.ui.toast_banner import ToastBanner
 from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
 from app.ui.worker import JasperWorker
+from app.vision.capture import requires_screen_observation
 from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
 
 _LOG = logging.getLogger("jasper.ui.main_window")
@@ -61,8 +62,6 @@ class MainWindow(QMainWindow):
         ("⚡  Tasks", "Tasks"),
         ("🕒  Scheduled", "Scheduled"),
         ("🧩  Plugins", "Plugins"),
-        ("📁  Files", "Files"),
-        ("🔀  Git", "Git"),
         ("⚙  Settings", "Settings"),
     )
 
@@ -169,8 +168,8 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked, i=index: self._select_page(i))
             self.nav_buttons.append(button)
 
-        # Workspace navigation buttons 0 to 5 (Chat, Tasks, Scheduled, Plugins, Files, Git)
-        for i in range(6):
+        # Workspace navigation buttons (Chat, Tasks, Scheduled, Plugins)
+        for i in range(len(self.NAV_ITEMS) - 1):
             sidebar_layout.addWidget(self.nav_buttons[i])
 
         # Subtle separator above chat history
@@ -194,8 +193,8 @@ class MainWindow(QMainWindow):
         sep_bottom.setStyleSheet("background-color: #2b2b2b; max-height: 1px; border: none; margin: 6px 2px 4px 2px;")
         sidebar_layout.addWidget(sep_bottom)
 
-        # Bottom-pinned Settings button (workspace index 6), permanently anchored above the status bar
-        settings_button = self.nav_buttons[6]
+        # Bottom-pinned Settings button (workspace index 4), permanently anchored above the status bar
+        settings_button = self.nav_buttons[-1]
         sidebar_layout.addWidget(settings_button)
         settings_button.raise_()
 
@@ -314,7 +313,7 @@ class MainWindow(QMainWindow):
         chat_layout.addWidget(composer)
         self.chat_page.setAcceptDrops(True)
 
-        # Stack Pages (Total 7 pages)
+        # Stack Pages (Total 5 pages)
         self.page_stack.addWidget(self.chat_page)  # 0: Chat
 
         self.tasks_page = TasksWorkspace()
@@ -330,14 +329,11 @@ class MainWindow(QMainWindow):
         self.plugins_page.plugin_toggled.connect(self._on_plugin_toggled)
         self.page_stack.addWidget(self.plugins_page)  # 3: Plugins
 
-        self.page_stack.addWidget(self._placeholder_page("Files"))  # 4: Files
-        self.page_stack.addWidget(self._placeholder_page("Git"))  # 5: Git
-
         self.settings_page = SettingsWorkspace()
         self.settings_page.settings_saved.connect(self._on_settings_saved)
         if hasattr(self.settings_page, "restart_requested"):
             self.settings_page.restart_requested.connect(self.restart_application)
-        self.page_stack.addWidget(self.settings_page)  # 6: Settings
+        self.page_stack.addWidget(self.settings_page)  # 4: Settings
 
         # VisionWorkspace preserved as attribute for direct tests and tools
         self.vision_page = VisionWorkspace()
@@ -515,12 +511,10 @@ class MainWindow(QMainWindow):
             1: "Autonomous Tasks & Execution",
             2: "Scheduled Tasks & Monitors",
             3: "Plugins & Skills Ecosystem",
-            4: "File workspace",
-            5: "Git & Pull Requests",
-            6: "Settings & Models",
+            4: "Settings & Models",
         }
         self.workspace_hint.setText(hints.get(index, "Workspace"))
-        if index == 6 and hasattr(self, "settings_page"):
+        if index == len(self.NAV_ITEMS) - 1 and hasattr(self, "settings_page"):
             self.settings_page.fetch_ollama_models()
 
     @Slot(dict)
@@ -679,16 +673,27 @@ class MainWindow(QMainWindow):
 
         image_path = self._attached_image_path
         live_watch = False
+        auto_screen = False
         if not image_path and self._is_watching_screen:
             self._grab_watch_frame()
             image_path = self._latest_watch_path
             live_watch = True
+        elif not image_path and requires_screen_observation(text):
+            try:
+                from app.vision.capture import capture_active_screen
+                captured_path = capture_active_screen()
+                image_path = str(captured_path)
+                auto_screen = True
+            except Exception as exc:
+                _LOG.warning("Auto screen capture on send failed: %s", exc)
 
         display_text = text
         if image_path:
             from pathlib import Path as _Path
             if live_watch:
                 display_text = f"{text}\n\n👁 live screen ({_Path(image_path).name})"
+            elif auto_screen:
+                display_text = f"{text}\n\n📸 screen capture ({_Path(image_path).name})"
             else:
                 display_text = f"{text}\n\n📎 {_Path(image_path).name}"
 
@@ -906,9 +911,7 @@ class MainWindow(QMainWindow):
                 1: "Task Completed",
                 2: "Scheduled Task Updated",
                 3: "Plugin Action Finished",
-                4: "File Action Done",
-                5: "Git Action Done",
-                6: "Settings Saved",
+                4: "Settings Saved",
             }
             title = tab_titles.get(active_tab, "Response Generated")
             self.notify_user(title, snippet, level="success")

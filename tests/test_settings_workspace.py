@@ -124,12 +124,13 @@ def test_main_window_settings_tab_integration(qapp):
     thread = MagicMock(spec=QThread)
     window = MainWindow(worker, thread)
 
-    assert window.page_stack.count() == 7
+    assert window.page_stack.count() == 5
     with patch.object(window.settings_page, "fetch_ollama_models") as mock_fetch:
-        window._select_page(6)
+        window._select_page(4)
         mock_fetch.assert_called_once()
     assert isinstance(window.page_stack.currentWidget(), SettingsWorkspace)
     assert window.workspace_hint.text() == "Settings & Models"
+
 
 
 

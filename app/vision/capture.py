@@ -174,3 +174,32 @@ def desktop_take_screenshot() -> dict[str, Any]:
         "filename": path.name,
     }
 
+
+SCREEN_OBSERVE_PATTERNS = (
+    r"\b(what('s|\s+is|\s+are|\s+do\s+you\s+see)?\s+(on|in)\s+(my|the|this)\s+(screen|desktop|display|monitor))\b",
+    r"\b(look\s+at\s+(my|the|this)\s+(screen|desktop|display|monitor))\b",
+    r"\b(check\s+(my|the|this)\s+(screen|desktop|display|monitor))\b",
+    r"\b(inspect\s+(my|the|this)\s+(screen|desktop|display|monitor))\b",
+    r"\b(read\s+(my|the|this)\s+(screen|desktop|display|monitor))\b",
+    r"\b(can\s+you\s+see\s+(my|the|this)\s+(screen|desktop|display|monitor))\b",
+    r"\b(what\s+window(s)?\s+(is|are)\s+open)\b",
+    r"\b(what('s|\s+is)\s+currently\s+on\s+(my|the)\s+screen)\b",
+    r"\b(what\s+am\s+i\s+looking\s+at)\b",
+    r"\b(read\s+the\s+error\s+on\s+(my|the)\s+screen)\b",
+    r"\b(see\s+what('s|\s+is)\s+on\s+(my|the)\s+screen)\b",
+    r"\b(describe\s+(my|the|what's\s+on\s+the)\s+(screen|desktop|display))\b",
+)
+
+
+def requires_screen_observation(text: str) -> bool:
+    """Return True when the user is asking JASPER to observe or describe their live desktop screen."""
+    if not text:
+        return False
+    import re
+    normalized = " ".join(text.lower().split())
+    # Exclude purely instructional questions like "how to capture screen" or "how do I record my screen"
+    if re.search(r"\b(how\s+(to|do\s+i|can\s+i)\s+(take|capture|record|snip))\b", normalized):
+        return False
+    return any(re.search(pat, normalized) for pat in SCREEN_OBSERVE_PATTERNS)
+
+
