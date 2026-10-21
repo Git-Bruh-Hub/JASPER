@@ -107,6 +107,17 @@ class PluginsWorkspace(QWidget):
             "prompt": "Run pytest on the test suite and summarize the results",
         },
         {
+            "id": "delta_screen_watcher",
+            "name": "Delta-Screen Companion Watcher",
+            "category": "Vision",
+            "icon": "👁️",
+            "installed": True,
+            "badge": "Proactive Vision",
+            "description": "Monitors desktop changes using low-overhead perceptual diffs and alerts you when builds, downloads, or errors occur.",
+            "suggestion": "Use when running long background tasks so JASPER notifies you the instant something finishes or fails.",
+            "prompt": "/watch notify me when the build or test completes",
+        },
+        {
             "id": "system_diagnostics",
             "name": "System & Hardware Diagnostics",
             "category": "System",

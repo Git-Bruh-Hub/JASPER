@@ -89,9 +89,10 @@ class MainWindow(QMainWindow):
         self._auto_send_snip: bool = False
         self._is_watching_screen = False
         self._latest_watch_path: str | None = None
-        self._watch_timer = QTimer(self)
-        self._watch_timer.setInterval(4000)
-        self._watch_timer.timeout.connect(self._grab_watch_frame)
+        from app.vision.delta_watcher import DeltaScreenWatcher
+        self.screen_watcher = DeltaScreenWatcher(vision=getattr(self.worker, "vision", None), parent=self)
+        self.screen_watcher.alert_ready.connect(self._on_watcher_alert)
+        self.screen_watcher.watcher_status_changed.connect(self._on_watcher_status_changed)
         self._ask_for_approval = True
         self._selected_model = "qwen3:8b"
         self._active_session_id: str | None = None
@@ -586,22 +587,32 @@ class MainWindow(QMainWindow):
     @Slot()
     def _toggle_watch_screen(self) -> None:
         """Toggle continuous screen watch mode."""
-        if not self._is_watching_screen:
-            self._start_watch_screen()
+        if not getattr(self, "screen_watcher", None):
+            return
+        if not self.screen_watcher.is_watching:
+            goal = self.input.text().strip()
+            if goal:
+                self.input.clear()
+            self._start_watch_screen(goal=goal)
         else:
             self._stop_watch_screen()
 
-    def _start_watch_screen(self, proactive: bool = True) -> None:
+    def _start_watch_screen(self, goal: str = "", proactive: bool = True) -> None:
+        if not getattr(self, "screen_watcher", None):
+            return
         self._is_watching_screen = True
         self.watch_button.setText("⏹")
         self.watch_button.setProperty("watching", "true")
         self.watch_button.style().unpolish(self.watch_button)
         self.watch_button.style().polish(self.watch_button)
-        self.watch_button.setToolTip("Stop Watching Screen (currently watching desktop)")
-        self.watch_status.setText("● WATCHING SCREEN")
-        self.watch_status.show()
+        tooltip_msg = f"Stop Watching Screen (Watching for: '{goal}')" if goal else "Stop Watching Screen (currently watching desktop)"
+        self.watch_button.setToolTip(tooltip_msg)
+        if hasattr(self, "watch_status"):
+            self.watch_status.setText("● WATCHING SCREEN")
+            self.watch_status.show()
+        self.workspace_hint.setText("Watching Screen...")
         self._grab_watch_frame()
-        self._watch_timer.start()
+        self.screen_watcher.start_watching(goal=goal)
 
         # Proactive: immediately trigger a live situational analysis
         if proactive and not self.busy and self._latest_watch_path:
@@ -609,27 +620,51 @@ class MainWindow(QMainWindow):
             self._send_text()
 
     def _stop_watch_screen(self) -> None:
+        if not getattr(self, "screen_watcher", None):
+            return
         self._is_watching_screen = False
-        self._watch_timer.stop()
+        self.screen_watcher.stop_watching()
         self.watch_button.setText("👁")
         self.watch_button.setProperty("watching", "false")
         self.watch_button.style().unpolish(self.watch_button)
         self.watch_button.style().polish(self.watch_button)
         self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
-        self.watch_status.setText("")
-        self.watch_status.hide()
+        if hasattr(self, "watch_status"):
+            self.watch_status.setText("")
+            self.watch_status.hide()
+        self.workspace_hint.setText("Ready")
         self._latest_watch_path = None
 
     def _grab_watch_frame(self) -> None:
         """Periodically grab virtual desktop across all monitors for watch mode."""
-        if self.busy:
-            return
         try:
             from app.vision.capture import capture_virtual_desktop
             path = capture_virtual_desktop()
             self._latest_watch_path = str(path)
         except Exception as exc:
             _LOG.debug("Background watch screen capture failed: %s", exc)
+
+    @Slot(str, str, str)
+    def _on_watcher_alert(self, title: str, message: str, image_path: str) -> None:
+        """Handle alert emitted by DeltaScreenWatcher."""
+        from pathlib import Path as _Path
+        self.notify_user(title, message, level="warning")
+        img_note = f"\n\n[Captured snapshot: {_Path(image_path).name}]" if image_path else ""
+        self._append_message("JASPER", f"👁️ **{title}**\n\n{message}{img_note}")
+
+    @Slot(bool, str)
+    def _on_watcher_status_changed(self, is_watching: bool, status_message: str) -> None:
+        """Update UI elements when watcher starts or stops."""
+        if not is_watching:
+            self.watch_button.setText("👁")
+            self.watch_button.setProperty("watching", "false")
+            self.watch_button.style().unpolish(self.watch_button)
+            self.watch_button.style().polish(self.watch_button)
+            self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
+            self.workspace_hint.setText("Ready")
+            self._append_message("JASPER", f"*{status_message}*")
+        else:
+            self._append_message("JASPER", f"*{status_message}*")
 
     @Slot()
     def _on_send_clicked(self) -> None:
@@ -647,17 +682,22 @@ class MainWindow(QMainWindow):
             else:
                 return
 
-        # Quick command: /watch
-        if text.lower() in ("/watch", "/watchscreen", "watch screen"):
+        # Quick command: /watch [optional goal]
+        lower_text = text.lower()
+        if lower_text.startswith("/watch") or lower_text.startswith("watch screen"):
+            goal = ""
+            if lower_text.startswith("/watch"):
+                goal = text[6:].strip()
+            elif lower_text.startswith("watch screen"):
+                goal = text[12:].strip()
             self.input.clear()
-            self._start_watch_screen(proactive=True)
+            self._start_watch_screen(goal=goal, proactive=True)
             return
 
-        # Quick command: /unwatch or /stopwatch
-        if text.lower() in ("/unwatch", "/stopwatch", "stop watching"):
+        # Quick command: /unwatch, /stopwatch, or "stop watching"
+        if lower_text in ("/unwatch", "/stopwatch", "stop watching", "stop watching screen"):
             self.input.clear()
             self._stop_watch_screen()
-            self._append_message("JASPER", "Screen watching stopped.")
             return
 
         if self.busy:
@@ -1123,6 +1163,8 @@ class MainWindow(QMainWindow):
             self._status_timer.stop()
         if hasattr(self, "_thinking_timer") and self._thinking_timer is not None:
             self._thinking_timer.stop()
+        if hasattr(self, "screen_watcher") and self.screen_watcher is not None:
+            self.screen_watcher.stop_watching("Window closed")
 
         # Safely dismiss active approval dialog without granting access
         if hasattr(self, "_active_approval_dialog") and self._active_approval_dialog is not None:
