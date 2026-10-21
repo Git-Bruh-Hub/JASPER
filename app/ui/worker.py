@@ -29,6 +29,7 @@ class JasperWorker(QObject):
     status_changed = Signal(str)
     system_status_ready = Signal(dict)
     approval_requested = Signal(ApprovalRequest)
+    audit_event_emitted = Signal(dict)  # structured audit event dictionary
     error = Signal(str)
     finished = Signal()
     cancelled = Signal()
@@ -43,6 +44,17 @@ class JasperWorker(QObject):
         self._coordinator: Coordinator | None = None
         if coordinator is not None:
             self.set_coordinator(coordinator)
+
+        # Wire audit event stream to Qt Signal
+        from app.core.audit import add_audit_listener
+        self._audit_listener = self._on_audit_record_emitted
+        add_audit_listener(self._audit_listener)
+
+    def _on_audit_record_emitted(self, record: dict) -> None:
+        try:
+            self.audit_event_emitted.emit(record)
+        except Exception:
+            pass
 
     @property
     def coordinator(self) -> Coordinator | None:

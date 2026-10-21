@@ -209,6 +209,13 @@ class MainWindow(QMainWindow):
         self._build_pages()
         content_layout.addWidget(self.page_stack, 1)
         body.addWidget(content, 1)
+
+        from app.ui.audit_timeline import AuditTimelineDrawer
+        self.audit_drawer = AuditTimelineDrawer(self)
+        self.audit_drawer.hide()
+        self.audit_drawer.drawer_closed.connect(lambda: getattr(self, "btn_audit_timeline", None) and self.btn_audit_timeline.setChecked(False))
+        body.addWidget(self.audit_drawer)
+
         root_layout.addWidget(self._build_status_bar())
         self._select_page(0)
 
@@ -225,6 +232,25 @@ class MainWindow(QMainWindow):
         self.workspace_hint = QLabel("Ready")
         self.workspace_hint.setObjectName("workspaceHint")
         header.addWidget(self.workspace_hint)
+
+        self.btn_audit_timeline = QPushButton("🛡️ Audit (0)")
+        self.btn_audit_timeline.setCheckable(True)
+        self.btn_audit_timeline.setToolTip("Toggle interactive Audit & Safety Timeline drawer (/audit)")
+        self.btn_audit_timeline.setStyleSheet(
+            "QPushButton {"
+            "  background: #202024;"
+            "  border: 1px solid #2e2e34;"
+            "  border-radius: 6px;"
+            "  color: #a1a1aa;"
+            "  padding: 4px 10px;"
+            "  font-size: 8.5pt;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #27272a; color: #ffffff; }"
+            "QPushButton:checked { background: #193522; color: #8ee6a1; border-color: #2e4a36; }"
+        )
+        self.btn_audit_timeline.clicked.connect(lambda: self._toggle_audit_timeline())
+        header.addWidget(self.btn_audit_timeline)
         chat_layout.addLayout(header)
 
         self.system_readiness_label = QLabel()
@@ -407,6 +433,8 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_finished)
         if hasattr(self.worker, "approval_requested"):
             self.worker.approval_requested.connect(self._on_approval_requested)
+        if hasattr(self.worker, "audit_event_emitted"):
+            self.worker.audit_event_emitted.connect(self._on_audit_event)
 
     def _setup_icon(self) -> None:
         import sys
@@ -667,6 +695,31 @@ class MainWindow(QMainWindow):
             self._append_message("JASPER", f"*{status_message}*")
 
     @Slot()
+    def _toggle_audit_timeline(self, force_open: bool = False) -> None:
+        """Toggle or open the interactive Audit & Safety Timeline drawer."""
+        if not hasattr(self, "audit_drawer") or self.audit_drawer is None:
+            return
+        if force_open or self.audit_drawer.isHidden():
+            self.audit_drawer.show()
+            if hasattr(self, "btn_audit_timeline"):
+                self.btn_audit_timeline.setChecked(True)
+        else:
+            self.audit_drawer.hide()
+            if hasattr(self, "btn_audit_timeline"):
+                self.btn_audit_timeline.setChecked(False)
+
+    @Slot(dict)
+    def _on_audit_event(self, event: dict) -> None:
+        """Handle incoming structured audit events from worker."""
+        if hasattr(self, "audit_drawer") and self.audit_drawer is not None:
+            self.audit_drawer.add_event(event)
+            cnt = len(self.audit_drawer._events)
+            if hasattr(self, "btn_audit_timeline"):
+                self.btn_audit_timeline.setText(f"🛡️ Audit ({cnt})")
+        if hasattr(self, "tasks_page") and self.tasks_page is not None:
+            self.tasks_page.add_audit_event(event)
+
+    @Slot()
     def _on_send_clicked(self) -> None:
         if self.busy:
             self.worker.cancel_request()
@@ -698,6 +751,13 @@ class MainWindow(QMainWindow):
         if lower_text in ("/unwatch", "/stopwatch", "stop watching", "stop watching screen"):
             self.input.clear()
             self._stop_watch_screen()
+            return
+
+        # Quick command: /audit or /timeline
+        if lower_text in ("/audit", "/timeline", "audit log", "show audit", "/audits"):
+            self.input.clear()
+            self._toggle_audit_timeline(force_open=True)
+            self._append_message("JASPER", "🛡️ **Audit & Safety Timeline** opened. You can inspect all tool executions, permission checks, and approval gates in real time.")
             return
 
         if self.busy:

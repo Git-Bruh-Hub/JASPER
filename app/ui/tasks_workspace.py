@@ -299,15 +299,15 @@ class TasksWorkspace(QWidget):
             if child.widget():
                 child.widget().deleteLater()
 
-    def _add_timeline_step(self, title: str, detail: str) -> None:
+    def _add_timeline_step(self, title: str, detail: str, icon: str = "✓", color: str = "#8ee6a1") -> None:
         step_frame = QFrame()
         step_frame.setStyleSheet("background: #242428; border-radius: 6px; padding: 6px 10px;")
         l = QHBoxLayout(step_frame)
         l.setContentsMargins(6, 4, 6, 4)
         l.setSpacing(8)
 
-        bullet = QLabel("✓")
-        bullet.setStyleSheet("color: #8ee6a1; font-weight: bold;")
+        bullet = QLabel(icon)
+        bullet.setStyleSheet(f"color: {color}; font-weight: bold;")
         l.addWidget(bullet)
 
         text = QLabel(f"<b>{title}:</b> {detail}")
@@ -316,6 +316,37 @@ class TasksWorkspace(QWidget):
 
         self.timeline_layout.addWidget(step_frame)
 
+    @Slot(dict)
+    def add_audit_event(self, event: dict) -> None:
+        """Add real-time audit event to the active task timeline."""
+        ev_name = event.get("event", "")
+        tool = event.get("tool_name", "")
+        res = event.get("resource", "")
+        status = event.get("status", "SUCCESS")
+        detail = event.get("detail", "")
+
+        if "tool" in ev_name:
+            icon = "⚡"
+            color = "#60a5fa"
+            action_desc = f"Tool: <code>{tool}</code>" if tool else "Tool Action"
+            if res:
+                action_desc += f" on {res}"
+            if status != "SUCCESS":
+                icon = "⚠️"
+                color = "#f87171"
+                action_desc += f" ({status})"
+            self._add_timeline_step("Tool Execution", action_desc, icon=icon, color=color)
+        elif "approval_requested" in ev_name:
+            self._add_timeline_step("Approval Gate", f"Confirmation requested for <b>{tool or 'action'}</b>", icon="🛡️", color="#fbbf24")
+        elif "approval_granted" in ev_name:
+            self._add_timeline_step("Approval Granted", f"User approved execution of <b>{tool or 'action'}</b>", icon="✓", color="#4ade80")
+        elif "approval_denied" in ev_name:
+            self._add_timeline_step("Approval Denied", f"Action rejected: {detail or 'User cancelled'}", icon="✕", color="#f87171")
+        elif "scope_denied" in ev_name:
+            self._add_timeline_step("Security Check", f"Denied: {res or detail}", icon="⛔", color="#f87171")
+        elif "planner" in ev_name or "executor" in ev_name:
+            self._add_timeline_step("Agent Step", f"{ev_name.replace('_', ' ').title()}", icon="🤖", color="#c084fc")
+
     @Slot()
     def task_completed(self) -> None:
         """Call when orchestrator signals task completion."""
@@ -323,4 +354,4 @@ class TasksWorkspace(QWidget):
         self.status_badge.setStyleSheet(
             "background: #193522; color: #8ee6a1; font-size: 8pt; font-weight: 700; padding: 4px 10px; border-radius: 6px;"
         )
-        self._add_timeline_step("Execution Finished", "All planned actions resolved.")
+        self._add_timeline_step("Execution Finished", "All planned actions resolved.", icon="✓", color="#8ee6a1")
