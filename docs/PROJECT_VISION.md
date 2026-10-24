@@ -85,10 +85,10 @@ To prevent confusion across development sessions, capabilities are categorized i
 
 | Capability | Current Status (Verified) | Future Vision (Planned) |
 | :--- | :--- | :--- |
-| **User Interface** | PySide6 desktop GUI workspace + CLI shell with Dark Cyberpunk aesthetic. | Ambient floating overlay, companion mobile client over Wi-Fi/Tailscale. |
+| **User Interface** | PySide6 desktop GUI workspace + CLI shell + Slide-out Audit & Safety Timeline Drawer (`/audit`). | Ambient floating overlay, companion mobile client over Wi-Fi/Tailscale. |
 | **Inference Engine** | Local Ollama API (`qwen3:8b`, `qwen3:14b`, `qwen3-vl:8b`). | Dynamic local model orchestration with optional encrypted API fallbacks. |
-| **Tool Registry** | Read-only inspection (`get_system_info`, `read_text_file`, `validate_image`). | Bounded write tools, Playwright web research, application launchers. |
+| **Tool Registry** | Scoped filesystem & execution tools (`get_system_info`, `read_text_file`, `edit_file_chunk`, `run_terminal_command`) guarded by human approval gates. | Playwright multi-step web browsing, application launchers. |
 | **Voice Interface** | One-turn Faster-Whisper STT with CUDA DLL preloading and noise gating. | Continuous hands-free conversation with wake-word and streaming TTS. |
-| **Vision** | Static image file inspection via `qwen3-vl:8b` in chat/CLI. | Dynamic UI inspection, visual artifact verification. |
-| **Agent Cognition** | v0.7 MultiAgentCoordinator (Planner/Executor delegation, DisagreementResolver, Orchestrator routing). | Multi-agent collaboration with specialized Critic and Reflector roles. |
-| **Security Boundary** | ScopedPermissionManager, Async ApprovalGate, canonicalization, retry guards. | OS-level application sandboxing, fine-grained capability tokens. |
+| **Vision** | Static image inspection via `qwen3-vl:8b` + Proactive companion observation (`DeltaScreenWatcher`, `/watch [goal]`). | Full semantic screen graph parsing, multimodal mouse guidance. |
+| **Agent Cognition** | v0.8 MultiAgentCoordinator (Autonomous problem-solving, test-repair loop, Planner/Executor delegation, DisagreementResolver). | Multi-agent collaboration with specialized Critic and Reflector roles. |
+| **Security Boundary** | ScopedPermissionManager, Async ApprovalGate, argument canonicalization, retry guards, and real-time in-memory audit ledger. | OS-level application sandboxing, fine-grained capability tokens. |

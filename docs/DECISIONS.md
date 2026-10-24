@@ -27,6 +27,10 @@
 - **ADR-018:** Controlled Live-Model Runtime Validation & Independent Readiness Review
 - **ADR-019:** Recursive Argument Redaction for Desktop Approval Presentation
 - **ADR-020:** Isolated Test Harness with Dedicated Scratch Registry for Live Validation
+- **ADR-021:** Scoped Desktop Autonomy with Surgical File Chunk Editing and Command Timeouts
+- **ADR-022:** Multi-Turn Autonomous Problem-Solving Loop with Tool Feedback and Self-Repair
+- **ADR-023:** Low-Overhead Perceptual DeltaScreenWatcher for Proactive Desktop Observation
+- **ADR-024:** Real-Time In-Memory Audit Ledger and Slide-Out Audit Timeline Drawer
 
 ---
 
@@ -225,3 +229,59 @@
 * **Consequences:**
   - *Positive:* Absolute tool containment during live LLM testing; deterministic contract tests prove isolation before live execution.
   - *Evidence:* Verified by 8/8 passing tests in `tests/test_live_harness_contracts.py`.
+
+---
+
+### ADR-021: Scoped Desktop Autonomy with Surgical File Chunk Editing and Command Timeouts
+* **Status:** **ACCEPTED** [VERIFIED in commit `90981ae`]
+* **Context:** True desktop assistance requires modifying local code and verifying execution with terminal commands. Blind full-file overwrites risk destroying entire files on model hallucination, and unconstrained shells risk runaway infinite loops.
+* **Decision:**
+  1. Implement `read_text_file` with line range slicing (`start_line`, `end_line`) and size caps (500 lines).
+  2. Implement `edit_file_chunk` requiring exact `target_content` substring matching before drop-in replacement (`replacement_content`), protected by `Risk.WRITE` and `ApprovalRequirement.ALWAYS`.
+  3. Implement `run_terminal_command` strictly constrained to local `workspace_root`, bound to a hard 30-second execution timeout, with stdout/stderr truncation (4000 chars), protected by `Risk.EXECUTE` and `ApprovalRequirement.ALWAYS`.
+* **Consequences:**
+  - *Positive:* High precision and zero accidental whole-file destruction. If `target_content` does not match, editing fails safely. Every file write and terminal command requires explicit user modal approval.
+  - *Evidence:* Verified in `tests/test_desktop_autonomy_tools.py` (8/8 passed).
+
+---
+
+### ADR-022: Multi-Turn Autonomous Problem-Solving Loop with Tool Feedback and Self-Repair
+* **Status:** **ACCEPTED** [VERIFIED in commit `011faf0`]
+* **Context:** Complex desktop goals (e.g., "Find why the script fails and fix the bug") cannot be solved in a single LLM turn. If a command fails, the agent must observe the error, read the offending file, propose a fix, and re-run to verify success.
+* **Decision:**
+  1. In `app/agents/desktop_wiring.py`, configure `desktop_coordinator` with `max_agent_rounds=24` and `max_tool_rounds=12`.
+  2. In `app/agents/multi_agent_coordinator.py`, collect structured turn observations for terminal commands, file chunk edits, and screenshot outputs, injecting them as feedback into subsequent planner/executor turns.
+  3. In `app/core/orchestrator.py`, expand the autonomous iteration loop to 6 turns before halting.
+  4. In `app/agents/router.py`, route natural coding, bug-fixing, and diagnostic intents directly into autonomous mode without requiring explicit `/auto` prefixing.
+* **Consequences:**
+  - *Positive:* JASPER autonomously diagnoses, edits, and verifies fixes, while keeping human approval gates intact for every file modification and command.
+  - *Evidence:* Verified in `tests/test_autonomous_problem_solving.py` (4/4 passed).
+
+---
+
+### ADR-023: Low-Overhead Perceptual DeltaScreenWatcher for Proactive Desktop Observation
+* **Status:** **ACCEPTED** [VERIFIED in commit `691f52b`]
+* **Context:** A desktop companion must know when background jobs, builds, or downloads finish. Running continuous video recording or querying Vision LLMs every second drains battery, burns GPU VRAM, and violates privacy invariants.
+* **Decision:**
+  1. Implement `DeltaScreenWatcher` in `app/vision/delta_watcher.py` using Qt's native `QImage` downsampling to capture 32x32 grayscale thumbnails (<1ms, 0% GPU load).
+  2. Compute normalized mean absolute pixel differences (`compute_pixel_delta`). Only invoke `VisionManager.analyze()` when delta exceeds 3% or active window tasks change.
+  3. Enforce a mandatory maximum duration cap (default 10 minutes) and fail-closed timeout alerts.
+  4. Integrate into `MainWindow` with natural chat commands (`/watch [goal]`, `/stopwatch`) and composer buttons (`👁` / `⏹`).
+* **Consequences:**
+  - *Positive:* Proactive alerts with zero continuous video recording, zero GPU burn during idle, and absolute privacy preservation.
+  - *Evidence:* Verified in `tests/test_delta_watcher.py` (9/9 passed).
+
+---
+
+### ADR-024: Real-Time In-Memory Audit Ledger and Slide-Out Audit Timeline Drawer
+* **Status:** **ACCEPTED** [VERIFIED in commit `a92243d`]
+* **Context:** With multi-turn autonomous execution and proactive observation active, users need instant inspectability into what tools were executed, what scopes were checked, and what approval decisions were made.
+* **Decision:**
+  1. Enhance `app/core/audit.py` with a thread-safe in-memory ring buffer (500 events) and observer listener registration (`add_audit_listener`).
+  2. Connect `audit_event_emitted` Qt Signal in `JasperWorker` to bridge audit records across threads onto the GUI thread.
+  3. Implement `AuditTimelineDrawer` in `app/ui/audit_timeline.py` with real-time metric chips (`Total`, `Tools`, `Approved`, `Denied`), category filters, search filtering, and collapsible JSON payload inspection.
+  4. Integrate with `MainWindow` (`🛡️ Audit (N)` header toggle, `/audit` chat command) and `TasksWorkspace` (real-time step timeline).
+* **Consequences:**
+  - *Positive:* Total audit transparency without touching external log viewers; users can inspect payloads, review execution timelines, and export audit ledgers with one click.
+  - *Evidence:* Verified in `tests/test_audit_timeline.py` (4/4 passed).
+

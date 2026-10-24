@@ -109,10 +109,19 @@ All inter-agent communication relies on pure, immutable data containers:
   - Modal PySide6 dialog presenting tool name, risk, parameters, and rationale.
   - Explicit Allow and Deny buttons; pressing Esc or closing the dialog triggers denial. Cleans up cleanly if the request is cancelled.
 
-### C. Desktop Autonomous Mode Boundary & Test Dependency Injection
-- **Disabled by Default:** In normal production desktop startup ([`app/desktop.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/desktop.py)), `worker.coordinator` is `None` and `orchestrator.multi_agent_coordinator` is `None`. User requests starting with `/auto` return `"Autonomous mode is not enabled."`.
-- **Standard Chat Bypass:** Ordinary chat turns (`mode != CognitiveMode.AUTONOMOUS`) route strictly through `CognitiveRouter` to `CognitiveEngine`, never touching the multi-agent coordinator.
-- **Pluggable Callables for Test Verification:** `Orchestrator` exposes optional `planner_callable` and `executor_callable` in `__init__`. When injected in test harnesses, deterministic fake planners and tools exercise the complete end-to-end approval lifecycle without enabling autonomous mode for end users.
+### C. Desktop Autonomous Mode Pipeline ([`app/agents/desktop_wiring.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/agents/desktop_wiring.py))
+- **Production Autonomy Wiring:** When desktop autonomy is initialized, `wire_desktop_autonomy(worker, workspace_root)` instantiates a scoped `MultiAgentCoordinator` bound strictly to `workspace_root`.
+- **Surgical Tool Suite:** Registers high-precision, safety-bounded tools:
+  - `read_text_file`: Sliced range reading (`start_line`, `end_line`) with 500-line size limit.
+  - `edit_file_chunk`: Non-destructive chunk editing requiring exact substring verification before replacement (`Risk.WRITE`, `ApprovalRequirement.ALWAYS`).
+  - `run_terminal_command`: Scoped shell command execution with hard 30-second timeout and 4000-character output truncation (`Risk.EXECUTE`, `ApprovalRequirement.ALWAYS`).
+- **Natural Intent Routing ([`app/agents/router.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/agents/router.py)):**
+  - Transparently routes natural coding requests, error fixing, and testing tasks (e.g., `"inspect the backup script and fix the typo"`) into `CognitiveMode.AUTONOMOUS`.
+  - Supports multi-prefix overrides: `/auto`, `/fix`, `/code`, `/task`, `/run`.
+- **Multi-Turn Feedback Loop:**
+  - `MultiAgentCoordinator` collects structured observations from tool executions, stdout/stderr, and screenshot captures.
+  - Injects execution observations back into subsequent planner and executor rounds.
+  - Bounded budget: 24 agent rounds, 12 tool rounds, and up to 6 autonomous orchestrator iterations.
 
 ### D. Approval Presentation Privacy & Recursive Argument Redaction ([`app/ui/approval_dialog.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/ui/approval_dialog.py))
 - `sanitize_arguments(args)` provides recursive protection against credential leakage in user approval modals:
@@ -162,10 +171,14 @@ All inter-agent communication relies on pure, immutable data containers:
 - Search: Deterministic token-overlap keyword matching. No external embedding vectors required.
 - Writing: Strictly explicit. Normal conversational text is kept in short-term context (`MAX_HISTORY_MESSAGES`) and not silently converted into long-term memories.
 
-### B. Vision Layer ([`app/vision/`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/vision/))
-- Provides static image file inspection via `qwen3-vl:8b`.
-- File validation enforces size caps (default 10 MB) and allowed image formats.
-- Visual observations are injected as structured text blocks into the LLM system prompt; the vision model has no tool execution capabilities.
+### B. Vision Layer & Proactive Observation ([`app/vision/`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/vision/))
+- **Static Image Analysis:** Provides static image file and snip inspection via `qwen3-vl:8b` with file validation size caps (10 MB).
+- **Proactive DeltaScreenWatcher ([`app/vision/delta_watcher.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/vision/delta_watcher.py)):**
+  - **Zero-GPU Perceptual Diffing:** Downsamples screen grabs in memory to 32x32 grayscale buffers via PySide6 (<1ms, 0% GPU load), computing normalized mean absolute pixel differences (`compute_pixel_delta`).
+  - **Window Task Awareness:** Detects changes in active desktop window titles and task lists alongside visual deltas.
+  - **Targeted Vision Verification:** Only invokes local Vision LLM analysis when a meaningful delta (>3%) occurs, using objective-focused prompts (`YES: <summary>` / `NO: <summary>`).
+  - **Privacy & Safety Constraints:** Enforces a mandatory maximum duration cap (default 10 minutes) and strict fail-closed timeout alerts. No continuous video streaming or recording.
+  - **Desktop Integration:** Controlled via composer buttons (`👁` / `⏹`) and natural chat commands (`/watch [goal]`, `/stopwatch`, `/unwatch`).
 
 ### C. Voice Pipeline ([`app/voice/`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/voice/))
 - STT: Faster-Whisper.
@@ -179,18 +192,28 @@ All inter-agent communication relies on pure, immutable data containers:
 
 ---
 
-## 7. Audit Logging ([`app/core/audit.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/core/audit.py))
+## 7. Audit Logging & Safety Ledger UI ([`app/core/audit.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/core/audit.py))
 
 Every permission-sensitive event emits a structured `AuditEvent`:
-- `TOOL_EXECUTION_REQUESTED`
-- `TOOL_EXECUTION_ALLOWED` / `TOOL_EXECUTION_DENIED`
-- `TOOL_EXECUTION_STARTED` / `TOOL_EXECUTION_COMPLETED` / `TOOL_EXECUTION_FAILED`
-- `APPROVAL_REQUESTED` / `APPROVAL_GRANTED` / `APPROVAL_DENIED`
-- `DISAGREEMENT_DETECTED` / `DISAGREEMENT_RESOLVED` / `DISAGREEMENT_HALTED`
-- `TOOL_RETRY` / `TOOL_RETRY_EXHAUSTED`
-- `BUDGET_EXHAUSTED`
-- `COORDINATOR_STATE_CHANGED`
-- `PLANNER_REJECTION`
+- `PERMISSION_CHECK` / `SCOPE_DENIED`
+- `APPROVAL_REQUESTED` / `APPROVAL_GRANTED` / `APPROVAL_DENIED` / `APPROVAL_EXPIRED` / `APPROVAL_CANCELLED`
+- `TOOL_EXECUTION` / `TOOL_SUCCESS` / `TOOL_FAILED` / `TOOL_UNKNOWN`
+- `TOOL_RETRY` / `TOOL_RETRY_EXHAUSTED` / `VERIFICATION_RECOVERY`
+- `PLANNER_INVOKED` / `EXECUTOR_INVOKED`
+- `DISAGREEMENT_DETECTED` / `DISAGREEMENT_HALTED`
+- `BUDGET_EXCEEDED`
 
-Audit records include UTC timestamps, action IDs, tool names, canonical scopes, and correlation IDs for post-hoc inspection.
+### In-Memory Ledger & Event Broadcasting
+- **Thread-Safe Ring Buffer:** Maintains an in-memory rolling buffer (500 events) for real-time desktop access via `get_recent_audit_records()`.
+- **Subscriber Listeners:** Components register via `add_audit_listener(callback)`.
+- **Qt Worker Bridge:** `JasperWorker.audit_event_emitted` safely marshals audit records across threads onto the GUI thread.
+
+### Interactive Desktop Presentation
+- **`AuditTimelineDrawer` ([`app/ui/audit_timeline.py`](file:///C:/Users/chitz/Desktop/JASPER%20Project/JASPER_v0.2.2/app/ui/audit_timeline.py)):**
+  - Slide-out safety drawer accessible via `🛡️ Audit (N)` header toggle or `/audit` chat command.
+  - Real-time metric counters (`Total`, `Tools`, `Approved`, `Denied`).
+  - Category filters (`All`, `Tools`, `Approvals`, `Security`, `Turns`) and text search.
+  - Expandable JSON payload inspector for inspecting arguments and execution details.
+  - One-click JSON audit ledger export (`QFileDialog`).
+- **`TasksWorkspace` Timeline:** Real-time step updates dynamically populated during autonomous task execution.
 

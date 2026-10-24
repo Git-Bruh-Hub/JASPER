@@ -1,8 +1,8 @@
-# JASPER (v0.7 Core)
+# JASPER (v0.8 Core)
 
 **JASPER = Just Another Smart Program Executing Request**
 
-Local-first personal AI assistant foundation for Windows 11. Built on a capability-based security boundary with Ollama inference, explicit memory, PySide6 desktop workspace, multimodal vision, and Hive Mind multi-agent coordination.
+Local-first personal AI assistant foundation for Windows 11. Built on a capability-based security boundary with Ollama inference, explicit memory, PySide6 desktop workspace, multimodal vision, Hive Mind multi-agent coordination, scoped desktop autonomy, and proactive observation.
 
 ## v0.2 scope
 
@@ -210,13 +210,20 @@ The repository implements the v0.7 Hive Mind multi-agent architecture (Slices 1�
 - Deterministic end-to-end integration test suite (`tests/test_desktop_approval_e2e.py`).
 - Isolated live-model test harness (`tests/support/live_harness.py`, `tests/test_live_harness_contracts.py`) validated against local Ollama `qwen3:14b`.
 
-> **Security Note:** Desktop autonomous execution (`/auto`) is **disabled by default** in normal desktop startup (`app/desktop.py`) and fails closed unless a coordinator is explicitly injected in a controlled test harness.
+## v0.8 — Desktop Autonomy, Proactive Vision & Audit Ledger
+
+JASPER v0.8 introduces scoped desktop autonomy, proactive companion observation, and interactive safety auditing:
+- **Scoped Desktop Autonomy:** Surgical file chunk editing (`edit_file_chunk`), sliced file reading (`read_text_file`), and scoped terminal execution (`run_terminal_command`) bound to `workspace_root` with 30-second timeouts.
+- **Natural Intent Routing & Auto-Fix:** `CognitiveRouter` transparently detects coding and diagnostic requests, driving a multi-turn problem-solving loop with feedback injection (stdout/stderr, file diffs, screen captures).
+- **Proactive Screen Observation (`DeltaScreenWatcher`):** Zero-GPU perceptual diffing (<1ms, 32x32 grayscale downsampling) and task-awareness notifying users when background jobs complete (`/watch [goal]`).
+- **Interactive Audit Timeline Drawer (`/audit`):** Slide-out safety drawer with live metric chips (`Total`, `Tools`, `Approved`, `Denied`), category filters, expandable JSON payload inspection, and JSON export.
+- **Release Notes:** Complete feature breakdown available in [v0.8.0 Release Notes](docs/release_notes/v0.8.0.md).
 
 ## Documentation
 
 For technical architecture, design principles, and engineering decisions:
 - [Architecture & Concurrency Flow](docs/ARCHITECTURE.md) — System request flow, cognitive modes, and capability boundaries
-- [Architecture Decision Records (ADRs)](docs/DECISIONS.md) — 20 documented decisions on security, state machines, and fail-closed policies
+- [Architecture Decision Records (ADRs)](docs/DECISIONS.md) — 24 documented decisions on security, state machines, and fail-closed policies
 - [Project Vision & Core Principles](docs/PROJECT_VISION.md) — Local-first privacy, bounded autonomy, and permission gating
 - [Development Roadmap](docs/ROADMAP.md) — Planned capabilities and milestone tracking
 - [Windows Standalone Packaging](docs/deployment/windows_packaging.md) — Instructions for building the standalone PyInstaller release

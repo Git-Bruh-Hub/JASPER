@@ -23,16 +23,16 @@
 [M3: Controlled Live-Model Validation & Readiness Review] (v0.7.2) ─► COMPLETE (Verified)
       │
       ▼
-[M4: Git Working-Tree & Release Tag Consolidation] (v0.7.3) ─► PROPOSED (Next)
+[M4: Git Working-Tree & Release Tag Consolidation] (v0.7.3) ──► COMPLETE (Verified)
       │
       ▼
-[M5: Bounded Controlled Tool Expansion: Filesystem & Web] (v0.8) ─► PLANNED
+[M5: Desktop Autonomy, Proactive Vision & Audit Ledger] (v0.8.0) ─► COMPLETE (Verified)
       │
       ▼
-[M6: Daily Driver Desktop & Proactive Assistance] (v0.9) ────► PLANNED
+[M6: Daily Driver Desktop & Proactive Assistance] (v0.9.0) ────► PLANNED
       │
       ▼
-[M7: Personal Intelligence & Companion Integration] (v1.0) ─► PLANNED
+[M7: Personal Intelligence & Companion Integration] (v1.0.0) ─► PLANNED
 ```
 
 ---
@@ -112,41 +112,20 @@
 ---
 
 ### Milestone 4: Git Working-Tree & Release Tag Consolidation (v0.7.3)
-* **Status:** **PROPOSED** (Recommended Next Milestone)
-* **Goal & Rationale:** The working tree contains 16 modified tracked files, 18 untracked directories/files, and branch name `fix/v0.6.1-cancellation` holding all v0.7.x capabilities. Safely stage, review, and commit the accumulated working-tree changes in logical atomic commits with explicit user approval, tag the milestone release, and reconcile branch tracking.
-* **Dependencies:** Milestone 3 complete.
-* **Scope:**
-  - Clean working tree verification and diff review.
-  - Present proposed atomic commits (e.g., Core Hive Mind, Approval Bridge & UI, Live Harness & Contracts, Documentation).
-  - Create release tag (e.g., `v0.7.2` or `v0.7.3`).
-  - Reconcile branch tracking (`fix/v0.6.1-cancellation` -> `release/v0.7.2` or `main`).
-* **Non-Scope:** Modifying application code or weakening permissions.
-* **Acceptance Criteria:** Zero unstaged working-tree churn, all commits verified, release tag created, full test suite passes.
-* **Benefit:** Locks in verified baseline (465 tests passing), eliminates working-tree drift, and prevents future merge conflicts.
-* **Cost of Deferring:** Continued accumulation of untracked files and working-tree changes on a branch with an obsolete name (`fix/v0.6.1-cancellation`) increases merge hazard and makes rollback difficult.
-* **Alternatives:**
-  - *Alternative A (Recommended):* Milestone 4 (Git Consolidation & Release Tag).
-  - *Alternative B:* Milestone 3.1 (Manual Visual UI Acceptance of `ApprovalDialog` on Windows 11 desktop by human user).
-  - *Alternative C:* Milestone 5 (Bounded Filesystem Write Tool Expansion).
+* **Status:** **COMPLETE** [VERIFIED in commit `c1b23eb`]
+* **Goal & Rationale:** Staged, reviewed, and committed accumulated working-tree changes into atomic commits, verified passing test suite, and merged into `main` as `v0.7.3`.
 
 ---
 
-### Milestone 5: Bounded Controlled Tool Expansion: Filesystem & Web (v0.8)
-* **Status:** **PLANNED**
-* **Goal & Rationale:** Allow JASPER to perform useful local file operations and controlled web research without violating the permission boundary.
-* **Dependencies:** Milestones 1–4 complete.
-* **Scope:**
-  - Filesystem write tool (`file.write`) restricted to designated `workspace_root` with mandatory `ApprovalRequirement.ALWAYS`.
-  - Read-only web scraper / search tool using Playwright with domain allowlisting and strict content-length caps.
-  - Wrapping all web outputs in `ExternalContent` (untrusted string flag).
-* **Non-Scope:** Arbitrary shell execution (`cmd.exe`, `powershell.exe`), arbitrary file deletion, admin commands.
-* **Acceptance Criteria:**
-  - Write operations outside workspace root are blocked unconditionally by `ScopedPermissionManager`.
-  - Every write operation triggers an un-ignorable approval modal.
-  - Web content cannot trigger prompt injection tool invocations.
-* **Required Regression Tests:**
-  - Unit tests verifying path traversal prevention on write.
-  - Tests ensuring `ExternalContent` cannot alter coordinator state or grant privileges.
+### Milestone 5: Desktop Autonomy, Proactive Vision & Audit Ledger (v0.8.0)
+* **Status:** **COMPLETE** [VERIFIED in `feature/desktop-autonomy`]
+* **Goal & Rationale:** Empower JASPER with scoped desktop autonomy to read files, surgically edit code chunks, execute verified terminal commands, proactively observe background jobs via perceptual screen diffing, and provide total safety visibility via an interactive audit timeline ledger.
+* **Scope Completed:**
+  - Surgical filesystem and terminal execution tools (`read_text_file`, `edit_file_chunk`, `run_terminal_command`) bound to `workspace_root` with 30-second timeouts.
+  - Multi-turn autonomous problem-solving loop with feedback injection (stdout/stderr, file diffs, screen captures) and natural intent routing.
+  - Low-overhead proactive observation (`DeltaScreenWatcher`, 32x32 grayscale downsampling, <1ms, 0% GPU load, `/watch [goal]`, `/stopwatch`).
+  - Thread-safe in-memory audit ledger (500 events) and slide-out `AuditTimelineDrawer` (`/audit`, real-time metric chips, JSON export).
+* **Verification Method:** Verified across 577 passing unit and integration tests (`tests/test_desktop_autonomy_tools.py`, `tests/test_autonomous_problem_solving.py`, `tests/test_delta_watcher.py`, `tests/test_audit_timeline.py`).
 
 ---
 
