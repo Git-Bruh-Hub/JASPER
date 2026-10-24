@@ -147,3 +147,34 @@ async def test_orchestrator_multi_turn_failure_recovery_allows_next_turn(mock_re
     answer = await orchestrator.respond("/auto good plan")
     assert answer == "Recovered response."
     assert mock_coord.state == CoordinatorState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_natural_autonomous_intent_routing(mock_registry, mock_permissions, mock_memory):
+    """Natural action goals (like 'Run pytest on the test suite' or '/task ...')
+    route to MultiAgentCoordinator automatically without requiring /auto."""
+    mock_coord = AsyncMock(spec=MultiAgentCoordinator)
+    mock_coord.run_multi_agent.return_value = "Test suite passed."
+
+    orchestrator = Orchestrator(
+        registry=mock_registry,
+        permissions=mock_permissions,
+        memory=mock_memory,
+        multi_agent_coordinator=mock_coord,
+    )
+    orchestrator._emit_local_response = AsyncMock()
+
+    # Natural action intent without any slash prefix
+    answer = await orchestrator.respond("Run pytest on the test suite")
+    assert answer == "Test suite passed."
+    mock_coord.run_multi_agent.assert_called_once()
+    kwargs = mock_coord.run_multi_agent.call_args.kwargs
+    assert kwargs["user_text"] == "Run pytest on the test suite"
+
+    # /task prefix stripped cleanly
+    mock_coord.run_multi_agent.reset_mock()
+    await orchestrator.respond("/task inspect the screen and check running apps")
+    mock_coord.run_multi_agent.assert_called_once()
+    kwargs2 = mock_coord.run_multi_agent.call_args.kwargs
+    assert kwargs2["user_text"] == "inspect the screen and check running apps"
+

@@ -3,17 +3,48 @@ from __future__ import annotations
 import logging
 from html import escape
 
-from PySide6.QtCore import QMimeData, QThread, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QDragEnterEvent, QDragLeaveEvent, QDropEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QMimeData, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QKeySequence,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QSystemTrayIcon,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.core.approval import ApprovalRequest
 from app.core.config import JASPER_VOICE_ENABLED
 from app.ui.approval_dialog import ApprovalDialog
 from app.ui.markdown_renderer import markdown_to_html
+from app.ui.plugins_workspace import PluginsWorkspace
+from app.ui.scheduled_workspace import ScheduledWorkspace
+from app.ui.session_drawer import SessionDrawer
+from app.ui.settings_workspace import SettingsWorkspace
 from app.ui.styles import APP_STYLE
+from app.ui.tasks_workspace import TasksWorkspace
+from app.ui.toast_banner import ToastBanner
 from app.ui.vision_workspace import OPEN_IMAGE_FILTER, VisionWorkspace
 from app.ui.worker import JasperWorker
+from app.vision.capture import requires_screen_observation
 from app.vision.image import SUPPORTED_IMAGE_EXTENSIONS
 
 _LOG = logging.getLogger("jasper.ui.main_window")
@@ -28,11 +59,9 @@ class MainWindow(QMainWindow):
 
     NAV_ITEMS = (
         ("💬  Chat", "Chat"),
-        ("🧠  Tasks", "Tasks"),
-        ("👁  Vision", "Vision"),
-        ("🤖  Agents", "Agents"),
-        ("📁  Files", "Files"),
-        ("🌐  Web", "Web"),
+        ("⚡  Tasks", "Tasks"),
+        ("🕒  Scheduled", "Scheduled"),
+        ("🧩  Plugins", "Plugins"),
         ("⚙  Settings", "Settings"),
     )
 
@@ -55,6 +84,18 @@ class MainWindow(QMainWindow):
         self._chat_drag_active = False
         self._active_approval_dialog: ApprovalDialog | None = None
         self._active_gate_id: str | None = None
+        self._snipper = None
+        self._pending_snip_prompt: str | None = None
+        self._auto_send_snip: bool = False
+        self._is_watching_screen = False
+        self._latest_watch_path: str | None = None
+        from app.vision.delta_watcher import DeltaScreenWatcher
+        self.screen_watcher = DeltaScreenWatcher(vision=getattr(self.worker, "vision", None), parent=self)
+        self.screen_watcher.alert_ready.connect(self._on_watcher_alert)
+        self.screen_watcher.watcher_status_changed.connect(self._on_watcher_status_changed)
+        self._ask_for_approval = True
+        self._selected_model = "qwen3:8b"
+        self._active_session_id: str | None = None
 
         # Periodic status refresh (every 30 seconds)
         self._status_timer = QTimer(self)
@@ -63,12 +104,15 @@ class MainWindow(QMainWindow):
         self._status_timer.start()
 
         self.setWindowTitle("JASPER")
+        self._setup_icon()
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
         self.setStyleSheet(APP_STYLE)
         self._build_ui()
         self._connect_worker()
         self._setup_tray()
+        self._setup_shortcuts()
+        self._init_session()
         self.request_refresh_status.emit()
 
     def _build_ui(self) -> None:
@@ -81,9 +125,22 @@ class MainWindow(QMainWindow):
         top_bar = QFrame(objectName="topBar")
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(18, 12, 18, 12)
+        top_layout.setSpacing(10)
+
+        brand_layout = QHBoxLayout()
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(8)
+
+        if getattr(self, "_app_icon", None) and not self._app_icon.isNull():
+            brand_icon = QLabel()
+            brand_icon.setPixmap(self._app_icon.pixmap(24, 24))
+            brand_icon.setFixedSize(24, 24)
+            brand_layout.addWidget(brand_icon)
+
         brand = QLabel("JASPER")
         brand.setObjectName("brand")
-        top_layout.addWidget(brand)
+        brand_layout.addWidget(brand)
+        top_layout.addLayout(brand_layout)
         top_layout.addStretch(1)
         self.active_status = QLabel("● STANDBY")
         self.active_status.setObjectName("activeStatus")
@@ -96,9 +153,9 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(body, 1)
 
         sidebar = QFrame(objectName="sidebar")
-        sidebar.setFixedWidth(190)
+        sidebar.setFixedWidth(220)
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(12, 16, 12, 12)
+        sidebar_layout.setContentsMargins(10, 14, 10, 10)
         sidebar_layout.setSpacing(4)
         sidebar_title = QLabel("WORKSPACES")
         sidebar_title.setObjectName("sidebarTitle")
@@ -111,17 +168,54 @@ class MainWindow(QMainWindow):
             button.setCheckable(True)
             button.clicked.connect(lambda checked, i=index: self._select_page(i))
             self.nav_buttons.append(button)
-            sidebar_layout.addWidget(button)
-        sidebar_layout.addStretch(1)
+
+        # Workspace navigation buttons (Chat, Tasks, Scheduled, Plugins)
+        for i in range(len(self.NAV_ITEMS) - 1):
+            sidebar_layout.addWidget(self.nav_buttons[i])
+
+        # Subtle separator above chat history
+        sep_top = QFrame()
+        sep_top.setFrameShape(QFrame.Shape.HLine)
+        sep_top.setStyleSheet("background-color: #2b2b2b; max-height: 1px; border: none; margin: 8px 2px 6px 2px;")
+        sidebar_layout.addWidget(sep_top)
+
+        # Embedded Chat History Session Drawer (occupies flexible middle section with internal scroll)
+        self.session_drawer = SessionDrawer(sidebar)
+        self.session_drawer.new_chat_requested.connect(self._on_new_chat_clicked)
+        self.session_drawer.session_selected.connect(self._on_session_selected)
+        self.session_drawer.session_renamed.connect(self._on_session_renamed)
+        self.session_drawer.session_pinned.connect(self._on_session_pinned)
+        self.session_drawer.delete_session_requested.connect(self._on_session_deleted)
+        sidebar_layout.addWidget(self.session_drawer, 1)
+
+        # Subtle separator above Settings
+        sep_bottom = QFrame()
+        sep_bottom.setFrameShape(QFrame.Shape.HLine)
+        sep_bottom.setStyleSheet("background-color: #2b2b2b; max-height: 1px; border: none; margin: 6px 2px 4px 2px;")
+        sidebar_layout.addWidget(sep_bottom)
+
+        # Bottom-pinned Settings button (workspace index 4), permanently anchored above the status bar
+        settings_button = self.nav_buttons[-1]
+        sidebar_layout.addWidget(settings_button)
+        settings_button.raise_()
+
         body.addWidget(sidebar)
 
         content = QFrame(objectName="contentFrame")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(24, 18, 24, 18)
         content_layout.setSpacing(10)
+        self.toast_banner = ToastBanner(content)
         self._build_pages()
         content_layout.addWidget(self.page_stack, 1)
         body.addWidget(content, 1)
+
+        from app.ui.audit_timeline import AuditTimelineDrawer
+        self.audit_drawer = AuditTimelineDrawer(self)
+        self.audit_drawer.hide()
+        self.audit_drawer.drawer_closed.connect(lambda: getattr(self, "btn_audit_timeline", None) and self.btn_audit_timeline.setChecked(False))
+        body.addWidget(self.audit_drawer)
+
         root_layout.addWidget(self._build_status_bar())
         self._select_page(0)
 
@@ -138,6 +232,25 @@ class MainWindow(QMainWindow):
         self.workspace_hint = QLabel("Ready")
         self.workspace_hint.setObjectName("workspaceHint")
         header.addWidget(self.workspace_hint)
+
+        self.btn_audit_timeline = QPushButton("🛡️ Audit (0)")
+        self.btn_audit_timeline.setCheckable(True)
+        self.btn_audit_timeline.setToolTip("Toggle interactive Audit & Safety Timeline drawer (/audit)")
+        self.btn_audit_timeline.setStyleSheet(
+            "QPushButton {"
+            "  background: #202024;"
+            "  border: 1px solid #2e2e34;"
+            "  border-radius: 6px;"
+            "  color: #a1a1aa;"
+            "  padding: 4px 10px;"
+            "  font-size: 8.5pt;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #27272a; color: #ffffff; }"
+            "QPushButton:checked { background: #193522; color: #8ee6a1; border-color: #2e4a36; }"
+        )
+        self.btn_audit_timeline.clicked.connect(lambda: self._toggle_audit_timeline())
+        header.addWidget(self.btn_audit_timeline)
         chat_layout.addLayout(header)
 
         self.system_readiness_label = QLabel()
@@ -153,21 +266,39 @@ class MainWindow(QMainWindow):
         self.conversation.setReadOnly(True)
         self.conversation.document().setDefaultStyleSheet("body{margin:0;padding:0;} h1{font-size:20pt;margin:12px 0 8px 0;} h2{font-size:16pt;margin:12px 0 7px 0;} h3{font-size:13pt;margin:10px 0 6px 0;} h4,h5,h6{font-size:11pt;margin:9px 0 5px 0;} p{margin:5px 0;line-height:1.35;} ul,ol{margin-top:5px;margin-bottom:7px;} li{margin:2px 0;} table{border-collapse:collapse;margin:8px 0;} th,td{border:1px solid #454545;padding:6px 9px;} th{background:#242424;font-weight:600;} blockquote{border-left:3px solid #555;padding-left:11px;color:#bdbdbd;margin:8px 0;} code{background:#242424;padding:2px 4px;} pre{background:#101010;border:1px solid #282828;padding:10px;margin:8px 0;} hr{border:0;border-top:1px solid #2b2b2b;margin:12px 0;} a{color:#8ee6a1;}")
         chat_layout.addWidget(self.conversation, 1)
+
         self.thinking_indicator = QLabel("JASPER is working…")
         self.thinking_indicator.setObjectName("thinkingIndicator")
         self.thinking_indicator.hide()
         chat_layout.addWidget(self.thinking_indicator)
+
         composer = QFrame(objectName="composer")
         composer.setAcceptDrops(True)
         composer_layout = QHBoxLayout(composer)
         composer_layout.setContentsMargins(8, 6, 8, 6)
         composer_layout.setSpacing(6)
+
         # --- Attach button (📎) ---
         self.attach_button = QPushButton("📎")
         self.attach_button.setObjectName("micButton")
         self.attach_button.setToolTip("Attach an image (PNG, JPG, WebP)")
         self.attach_button.clicked.connect(self._open_attachment)
         composer_layout.addWidget(self.attach_button)
+
+        # --- Screen button (📸) ---
+        self.screen_button = QPushButton("📸")
+        self.screen_button.setObjectName("micButton")
+        self.screen_button.setToolTip("Snip screen region or double-click to capture monitor")
+        self.screen_button.clicked.connect(self._on_screen_button_clicked)
+        composer_layout.addWidget(self.screen_button)
+
+        # --- Watch screen button (👁) ---
+        self.watch_button = QPushButton("👁")
+        self.watch_button.setObjectName("micButton")
+        self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
+        self.watch_button.clicked.connect(self._toggle_watch_screen)
+        composer_layout.addWidget(self.watch_button)
+
         # --- Image chip (hidden by default) ---
         self.attachment_chip = QFrame(objectName="attachmentChip")
         self.attachment_chip.setContentsMargins(0, 0, 0, 0)
@@ -184,31 +315,55 @@ class MainWindow(QMainWindow):
         chip_layout.addWidget(dismiss_btn)
         self.attachment_chip.hide()
         composer_layout.addWidget(self.attachment_chip)
+
         # --- Text input ---
         self.input = QLineEdit()
         self.input.setObjectName("input")
         self.input.setPlaceholderText("Ask JASPER...")
         self.input.returnPressed.connect(self._send_text)
         self.input.setAcceptDrops(False)
+        self.input.installEventFilter(self)
         composer_layout.addWidget(self.input, 1)
+
         self.mic_button = QPushButton("🎤")
         self.mic_button.setObjectName("micButton")
         self.mic_button.setToolTip("Speak to JASPER")
         self.mic_button.setEnabled(JASPER_VOICE_ENABLED)
         self.mic_button.clicked.connect(self._listen)
         composer_layout.addWidget(self.mic_button)
+
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("sendButton")
         self.send_button.clicked.connect(self._on_send_clicked)
         composer_layout.addWidget(self.send_button)
+
         chat_layout.addWidget(composer)
         self.chat_page.setAcceptDrops(True)
-        self.page_stack.addWidget(self.chat_page)
-        self.page_stack.addWidget(self._placeholder_page("Tasks"))
+
+        # Stack Pages (Total 5 pages)
+        self.page_stack.addWidget(self.chat_page)  # 0: Chat
+
+        self.tasks_page = TasksWorkspace()
+        self.tasks_page.task_started.connect(self._on_task_started)
+        self.page_stack.addWidget(self.tasks_page)  # 1: Tasks
+
+        self.scheduled_page = ScheduledWorkspace()
+        self.scheduled_page.task_triggered.connect(self._on_scheduled_task_triggered)
+        self.page_stack.addWidget(self.scheduled_page)  # 2: Scheduled
+
+        self.plugins_page = PluginsWorkspace()
+        self.plugins_page.use_item_requested.connect(self._on_plugin_use_requested)
+        self.plugins_page.plugin_toggled.connect(self._on_plugin_toggled)
+        self.page_stack.addWidget(self.plugins_page)  # 3: Plugins
+
+        self.settings_page = SettingsWorkspace()
+        self.settings_page.settings_saved.connect(self._on_settings_saved)
+        if hasattr(self.settings_page, "restart_requested"):
+            self.settings_page.restart_requested.connect(self.restart_application)
+        self.page_stack.addWidget(self.settings_page)  # 4: Settings
+
+        # VisionWorkspace preserved as attribute for direct tests and tools
         self.vision_page = VisionWorkspace()
-        self.page_stack.addWidget(self.vision_page)
-        for _, page_name in self.NAV_ITEMS[3:]:
-            self.page_stack.addWidget(self._placeholder_page(page_name))
 
     def _placeholder_page(self, name: str) -> QWidget:
         page = QWidget()
@@ -230,12 +385,11 @@ class MainWindow(QMainWindow):
     def _page_description(name: str) -> str:
         descriptions = {
             "Tasks": "Complex work, progress, and future automation will live here.",
-            "Agents": "Adaptive multi-agent work will appear here when the agent layer is enabled.",
+            "Pull Requests": "Git branch, diff status, and pull request review will live here.",
             "Files": "Safe file browsing and document workflows will be surfaced here.",
-            "Web": "Web research and browsing controls will appear here in a later milestone.",
             "Settings": "Application, model, voice, permissions, and resource settings will live here.",
         }
-        return descriptions[name]
+        return descriptions.get(name, "Workspace details will live here.")
 
     def _build_status_bar(self) -> QFrame:
         frame = QFrame(objectName="statusBar")
@@ -254,6 +408,11 @@ class MainWindow(QMainWindow):
         self.gpu_status = QLabel("GPU ○")
         self.gpu_status.setProperty("class", "statusChip")
         layout.addWidget(self.gpu_status)
+        self.watch_status = QLabel("")
+        self.watch_status.setObjectName("watchStatus")
+        self.watch_status.setProperty("class", "statusChip")
+        self.watch_status.hide()
+        layout.addWidget(self.watch_status)
         layout.addStretch(1)
         return frame
 
@@ -274,15 +433,40 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_finished)
         if hasattr(self.worker, "approval_requested"):
             self.worker.approval_requested.connect(self._on_approval_requested)
+        if hasattr(self.worker, "audit_event_emitted"):
+            self.worker.audit_event_emitted.connect(self._on_audit_event)
+
+    def _setup_icon(self) -> None:
+        import sys
+        from pathlib import Path
+        from PySide6.QtGui import QIcon
+
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent.parent))
+        icon_path = Path("assets/jasper_icon.png")
+        if not icon_path.exists():
+            icon_path = base_dir / "assets" / "jasper_icon.png"
+
+        if icon_path.exists():
+            self._app_icon = QIcon(str(icon_path))
+            self.setWindowIcon(self._app_icon)
+        else:
+            self._app_icon = None
 
     def _setup_tray(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self._tray = QSystemTrayIcon(self)
+        if getattr(self, "_app_icon", None) and not self._app_icon.isNull():
+            self._tray.setIcon(self._app_icon)
         self._tray.setToolTip("JASPER")
         self._tray.setContextMenu(self._build_tray_menu())
         self._tray.activated.connect(self._tray_activated)
         self._tray.show()
+
+    def _setup_shortcuts(self) -> None:
+        from PySide6.QtGui import QKeySequence, QShortcut
+        self._reload_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
+        self._reload_shortcut.activated.connect(self.restart_application)
 
     def _build_tray_menu(self):
         from PySide6.QtWidgets import QMenu
@@ -291,21 +475,249 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.showNormal)
         menu.addAction(open_action)
         menu.addSeparator()
+        restart_action = QAction("🔄 Restart / Reload JASPER", self)
+        restart_action.triggered.connect(self.restart_application)
+        menu.addAction(restart_action)
+        menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         menu.addAction(exit_action)
         return menu
+
+    def restart_application(self) -> None:
+        """Restarts the JASPER desktop application immediately to load updated source code."""
+        import sys
+        from pathlib import Path
+        from PySide6.QtCore import QProcess
+        from PySide6.QtWidgets import QApplication
+
+        _LOG.info("Restarting JASPER application to reload updated source code...")
+        if self._tray:
+            self._tray.hide()
+        if hasattr(self.worker, "cancel_current"):
+            self.worker.cancel_current()
+
+        desktop_script = Path(__file__).resolve().parent.parent / "desktop.py"
+        app_args = [str(desktop_script)] if desktop_script.exists() else ["-m", "app.desktop"]
+
+        QProcess.startDetached(sys.executable, app_args)
+        self._shutdown_clean = True
+        QApplication.quit()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.showNormal()
             self.activateWindow()
 
+    @Slot(str)
+    def _on_task_started(self, goal: str) -> None:
+        self._select_page(0)
+        self.input.setText(goal)
+        self._send_text()
+
+    @Slot(str, str)
+    def _on_scheduled_task_triggered(self, title: str, prompt: str) -> None:
+        self._select_page(0)
+        self.input.setText(prompt)
+        self._send_text()
+
+    @Slot(str, str)
+    def _on_plugin_use_requested(self, item_name: str, prompt: str) -> None:
+        self._select_page(0)
+        self.input.setText(prompt)
+        self._send_text()
+
+    @Slot(str, bool)
+    def _on_plugin_toggled(self, plugin_id: str, enabled: bool) -> None:
+        _LOG.info("Plugin %s toggled: %s", plugin_id, enabled)
+
     def _select_page(self, index: int) -> None:
         self.page_stack.setCurrentIndex(index)
         for i, button in enumerate(self.nav_buttons):
             button.setChecked(i == index)
-        self.workspace_hint.setText("Vision workspace" if index == 2 else "Ready" if index == 0 else "Workspace")
+        hints = {
+            0: "Ready",
+            1: "Autonomous Tasks & Execution",
+            2: "Scheduled Tasks & Monitors",
+            3: "Plugins & Skills Ecosystem",
+            4: "Settings & Models",
+        }
+        self.workspace_hint.setText(hints.get(index, "Workspace"))
+        if index == len(self.NAV_ITEMS) - 1 and hasattr(self, "settings_page"):
+            self.settings_page.fetch_ollama_models()
+
+    @Slot(dict)
+    def _on_settings_saved(self, settings: dict) -> None:
+        """Handle settings updates from the Settings workspace."""
+        model_name = settings.get("JASPER_MODEL", "")
+        self.workspace_hint.setText(f"Active model: {model_name}")
+
+    @Slot()
+    def _on_screen_button_clicked(self) -> None:
+        """Handle click on composer 📸 button."""
+        prompt = self.input.text().strip()
+        self._capture_screen_and_ask(custom_prompt=prompt, auto_send=False)
+
+    def _capture_screen_and_ask(self, custom_prompt: str | None = None, auto_send: bool = False) -> None:
+        """Launch interactive screen snipping overlay across all monitors."""
+        if self.busy:
+            return
+
+        self._pending_snip_prompt = custom_prompt if custom_prompt else None
+        self._auto_send_snip = auto_send
+        self.hide()
+
+        def do_snip() -> None:
+            try:
+                from app.ui.screen_snipper import ScreenSnipper
+                if self._snipper is None:
+                    self._snipper = ScreenSnipper()
+                    self._snipper.snipped.connect(self._on_chat_snipped)
+                    self._snipper.cancelled.connect(self._on_chat_snip_cancelled)
+                self._snipper.start_snip()
+            except Exception as exc:
+                _LOG.exception("Screen snipper launch failed: %s", exc)
+                self.show()
+                self.activateWindow()
+                self._on_error(f"Failed to launch screen snipper: {exc}")
+
+        QTimer.singleShot(150, do_snip)
+
+    @Slot(str)
+    def _on_chat_snipped(self, file_path: str) -> None:
+        self.show()
+        self.activateWindow()
+        self._set_attachment(file_path)
+        prompt = getattr(self, "_pending_snip_prompt", None)
+        auto_send = getattr(self, "_auto_send_snip", False)
+        self._pending_snip_prompt = None
+        self._auto_send_snip = False
+
+        if auto_send and prompt:
+            self.input.setText(prompt)
+            self._send_text()
+        else:
+            if prompt:
+                self.input.setText(prompt)
+            self.input.setFocus()
+
+    @Slot()
+    def _on_chat_snip_cancelled(self) -> None:
+        self.show()
+        self.activateWindow()
+        prompt = getattr(self, "_pending_snip_prompt", None)
+        if prompt:
+            self.input.setText(prompt)
+        self._pending_snip_prompt = None
+        self._auto_send_snip = False
+        self.input.setFocus()
+
+    @Slot()
+    def _toggle_watch_screen(self) -> None:
+        """Toggle continuous screen watch mode."""
+        if not getattr(self, "screen_watcher", None):
+            return
+        if not self.screen_watcher.is_watching:
+            goal = self.input.text().strip()
+            if goal:
+                self.input.clear()
+            self._start_watch_screen(goal=goal)
+        else:
+            self._stop_watch_screen()
+
+    def _start_watch_screen(self, goal: str = "", proactive: bool = True) -> None:
+        if not getattr(self, "screen_watcher", None):
+            return
+        self._is_watching_screen = True
+        self.watch_button.setText("⏹")
+        self.watch_button.setProperty("watching", "true")
+        self.watch_button.style().unpolish(self.watch_button)
+        self.watch_button.style().polish(self.watch_button)
+        tooltip_msg = f"Stop Watching Screen (Watching for: '{goal}')" if goal else "Stop Watching Screen (currently watching desktop)"
+        self.watch_button.setToolTip(tooltip_msg)
+        if hasattr(self, "watch_status"):
+            self.watch_status.setText("● WATCHING SCREEN")
+            self.watch_status.show()
+        self.workspace_hint.setText("Watching Screen...")
+        self._grab_watch_frame()
+        self.screen_watcher.start_watching(goal=goal)
+
+        # Proactive: immediately trigger a live situational analysis
+        if proactive and not self.busy and self._latest_watch_path:
+            self.input.setText("What is on my screen and what is currently happening?")
+            self._send_text()
+
+    def _stop_watch_screen(self) -> None:
+        if not getattr(self, "screen_watcher", None):
+            return
+        self._is_watching_screen = False
+        self.screen_watcher.stop_watching()
+        self.watch_button.setText("👁")
+        self.watch_button.setProperty("watching", "false")
+        self.watch_button.style().unpolish(self.watch_button)
+        self.watch_button.style().polish(self.watch_button)
+        self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
+        if hasattr(self, "watch_status"):
+            self.watch_status.setText("")
+            self.watch_status.hide()
+        self.workspace_hint.setText("Ready")
+        self._latest_watch_path = None
+
+    def _grab_watch_frame(self) -> None:
+        """Periodically grab virtual desktop across all monitors for watch mode."""
+        try:
+            from app.vision.capture import capture_virtual_desktop
+            path = capture_virtual_desktop()
+            self._latest_watch_path = str(path)
+        except Exception as exc:
+            _LOG.debug("Background watch screen capture failed: %s", exc)
+
+    @Slot(str, str, str)
+    def _on_watcher_alert(self, title: str, message: str, image_path: str) -> None:
+        """Handle alert emitted by DeltaScreenWatcher."""
+        from pathlib import Path as _Path
+        self.notify_user(title, message, level="warning")
+        img_note = f"\n\n[Captured snapshot: {_Path(image_path).name}]" if image_path else ""
+        self._append_message("JASPER", f"👁️ **{title}**\n\n{message}{img_note}")
+
+    @Slot(bool, str)
+    def _on_watcher_status_changed(self, is_watching: bool, status_message: str) -> None:
+        """Update UI elements when watcher starts or stops."""
+        if not is_watching:
+            self.watch_button.setText("👁")
+            self.watch_button.setProperty("watching", "false")
+            self.watch_button.style().unpolish(self.watch_button)
+            self.watch_button.style().polish(self.watch_button)
+            self.watch_button.setToolTip("Watch Screen mode (continuous screen awareness until stopped)")
+            self.workspace_hint.setText("Ready")
+            self._append_message("JASPER", f"*{status_message}*")
+        else:
+            self._append_message("JASPER", f"*{status_message}*")
+
+    @Slot()
+    def _toggle_audit_timeline(self, force_open: bool = False) -> None:
+        """Toggle or open the interactive Audit & Safety Timeline drawer."""
+        if not hasattr(self, "audit_drawer") or self.audit_drawer is None:
+            return
+        if force_open or self.audit_drawer.isHidden():
+            self.audit_drawer.show()
+            if hasattr(self, "btn_audit_timeline"):
+                self.btn_audit_timeline.setChecked(True)
+        else:
+            self.audit_drawer.hide()
+            if hasattr(self, "btn_audit_timeline"):
+                self.btn_audit_timeline.setChecked(False)
+
+    @Slot(dict)
+    def _on_audit_event(self, event: dict) -> None:
+        """Handle incoming structured audit events from worker."""
+        if hasattr(self, "audit_drawer") and self.audit_drawer is not None:
+            self.audit_drawer.add_event(event)
+            cnt = len(self.audit_drawer._events)
+            if hasattr(self, "btn_audit_timeline"):
+                self.btn_audit_timeline.setText(f"🛡️ Audit ({cnt})")
+        if hasattr(self, "tasks_page") and self.tasks_page is not None:
+            self.tasks_page.add_audit_event(event)
 
     @Slot()
     def _on_send_clicked(self) -> None:
@@ -317,13 +729,94 @@ class MainWindow(QMainWindow):
 
     def _send_text(self) -> None:
         text = self.input.text().strip()
-        if not text or self.busy:
+        if not text:
+            if self._attached_image_path:
+                text = "What is on my screen and what is this doing?"
+            else:
+                return
+
+        # Quick command: /watch [optional goal]
+        lower_text = text.lower()
+        if lower_text.startswith("/watch") or lower_text.startswith("watch screen"):
+            goal = ""
+            if lower_text.startswith("/watch"):
+                goal = text[6:].strip()
+            elif lower_text.startswith("watch screen"):
+                goal = text[12:].strip()
+            self.input.clear()
+            self._start_watch_screen(goal=goal, proactive=True)
             return
+
+        # Quick command: /unwatch, /stopwatch, or "stop watching"
+        if lower_text in ("/unwatch", "/stopwatch", "stop watching", "stop watching screen"):
+            self.input.clear()
+            self._stop_watch_screen()
+            return
+
+        # Quick command: /audit or /timeline
+        if lower_text in ("/audit", "/timeline", "audit log", "show audit", "/audits"):
+            self.input.clear()
+            self._toggle_audit_timeline(force_open=True)
+            self._append_message("JASPER", "🛡️ **Audit & Safety Timeline** opened. You can inspect all tool executions, permission checks, and approval gates in real time.")
+            return
+
+        if self.busy:
+            return
+
+        # Quick command: /screen or /snip [optional query]
+        if text.startswith("/screen") or text.startswith("/snip"):
+            prefix_len = 7 if text.startswith("/screen") else 5
+            query = text[prefix_len:].strip()
+            self.input.clear()
+            self._capture_screen_and_ask(custom_prompt=query, auto_send=bool(query))
+            return
+
         image_path = self._attached_image_path
+        live_watch = False
+        auto_screen = False
+        if not image_path and self._is_watching_screen:
+            self._grab_watch_frame()
+            image_path = self._latest_watch_path
+            live_watch = True
+        elif not image_path and requires_screen_observation(text):
+            try:
+                from app.vision.capture import capture_active_screen
+                captured_path = capture_active_screen()
+                image_path = str(captured_path)
+                auto_screen = True
+            except Exception as exc:
+                _LOG.warning("Auto screen capture on send failed: %s", exc)
+
         display_text = text
         if image_path:
             from pathlib import Path as _Path
-            display_text = f"{text}\n\n📎 {_Path(image_path).name}"
+            if live_watch:
+                display_text = f"{text}\n\n👁 live screen ({_Path(image_path).name})"
+            elif auto_screen:
+                display_text = f"{text}\n\n📸 screen capture ({_Path(image_path).name})"
+            else:
+                display_text = f"{text}\n\n📎 {_Path(image_path).name}"
+
+        # Ensure active session exists and auto-title new sessions on first prompt
+        if hasattr(self, "_active_session_id") and hasattr(self, "worker") and hasattr(self.worker, "jasper"):
+            memory = getattr(self.worker.jasper, "memory", None)
+            if memory is not None and hasattr(memory, "create_session"):
+                if not self._active_session_id:
+                    new_sess = memory.create_session("New Chat")
+                    self._active_session_id = new_sess["id"]
+                    self._refresh_sessions_list()
+
+                # Check for auto-titling first prompt
+                sess = memory.get_session(self._active_session_id)
+                if sess and sess.get("title") in ("New Chat", "Untitled Chat"):
+                    clean = text.strip().replace("\n", " ")
+                    if len(clean) > 35:
+                        clean = clean[:32].rstrip() + "…"
+                    memory.update_session(self._active_session_id, title=clean, touch_updated=True)
+                    self._refresh_sessions_list()
+
+                self.worker.active_session_id = self._active_session_id
+
         self.worker.begin_request()
         self._append_message("You", display_text)
         self.input.clear()
@@ -397,7 +890,7 @@ class MainWindow(QMainWindow):
     def _set_status(self, state: str) -> None:
         self.active_status.setText(f"● {state}")
         self.status_state.setText(state)
-        if self.page_stack.currentIndex() != 2:
+        if self.page_stack.currentIndex() == 0:
             self.workspace_hint.setText({"STANDBY": "Ready", "ACTIVE": "Working...", "LISTENING": "Listening...", "SPEAKING": "Speaking..."}.get(state, state.title()))
         if state == "ACTIVE" and not self._streaming_content:
             self._show_thinking("JASPER is working")
@@ -445,6 +938,16 @@ class MainWindow(QMainWindow):
         self._active_approval_dialog = dialog
         self._active_gate_id = request.gate_id
 
+        tool_name = getattr(request.action, "tool_name", "action") if hasattr(request, "action") else getattr(request, "tool_name", "action")
+        desc = getattr(request.action, "description", "") if hasattr(request, "action") else getattr(request, "description", "")
+        summary = f"{tool_name}: {desc[:80]}" if desc else f"{tool_name} requires confirmation"
+
+        self.notify_user(
+            "JASPER Approval Required",
+            summary,
+            level="warning",
+        )
+
         dialog.decision_made.connect(self._on_approval_decision)
 
         def _cleanup():
@@ -465,13 +968,57 @@ class MainWindow(QMainWindow):
         if not success:
             _LOG.warning("Approval resolution rejected for gate_id=%s, granted=%s", gate_id, granted)
 
+    def notify_user(self, title: str, message: str, level: str = "info") -> None:
+        """Deliver user notifications both via in-app toast banner and system tray."""
+        import app.core.config as _cfg
+        if not getattr(_cfg, "JASPER_NOTIFICATIONS_ENABLED", True):
+            return
+
+        # 1. In-app toast banner
+        if hasattr(self, "toast_banner"):
+            self.toast_banner.show_toast(title, message, level=level, timeout_ms=5000)
+
+        # 2. System tray notification (native OS toast)
+        if getattr(self, "_tray", None) and self._tray.isVisible():
+            icon_map = {
+                "success": QSystemTrayIcon.MessageIcon.Information,
+                "info": QSystemTrayIcon.MessageIcon.Information,
+                "warning": QSystemTrayIcon.MessageIcon.Warning,
+                "error": QSystemTrayIcon.MessageIcon.Critical,
+            }
+            tray_icon = icon_map.get(level.lower(), QSystemTrayIcon.MessageIcon.Information)
+            try:
+                self._tray.showMessage(title, message, tray_icon, 4500)
+            except Exception as e:
+                _LOG.warning("Could not show tray message: %s", e)
+
     @Slot()
     def _on_finished(self) -> None:
         self._set_busy(False)
+        self._refresh_sessions_list()
+        if hasattr(self, "tasks_page"):
+            self.tasks_page.task_completed()
+
+        snippet = ""
+        if self._messages and self._messages[-1][0] == "JASPER":
+            content = self._messages[-1][1]
+            clean = content.replace("**", "").replace("#", "").strip()
+            snippet = (clean[:90] + "...") if len(clean) > 90 else clean
+        if snippet:
+            active_tab = self.page_stack.currentIndex()
+            tab_titles = {
+                0: "Response Generated",
+                1: "Task Completed",
+                2: "Scheduled Task Updated",
+                3: "Plugin Action Finished",
+                4: "Settings Saved",
+            }
+            title = tab_titles.get(active_tab, "Response Generated")
+            self.notify_user(title, snippet, level="success")
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
-        if self.page_stack.currentIndex() == 2 and self.vision_page._busy:
+        if hasattr(self, "vision_page") and self.vision_page._busy:
             self.vision_page.show_error(message)
             return
         self._streaming_active = False
@@ -479,6 +1026,7 @@ class MainWindow(QMainWindow):
         self._stop_thinking()
         self._append_message("JASPER", f"I couldn't complete that request.\n\n{message}")
         self._set_busy(False)
+        self.notify_user("JASPER Error", message[:100], level="error")
 
     @Slot(dict)
     def _on_system_status(self, info: dict) -> None:
@@ -559,6 +1107,112 @@ class MainWindow(QMainWindow):
         scrollbar = self.conversation.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+    # ------------------------------------------------------------------
+    # Chat Session Management
+    # ------------------------------------------------------------------
+
+    def _init_session(self) -> None:
+        """Initialize active session from memory or create initial session."""
+        if not hasattr(self, "worker") or self.worker is None:
+            return
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is None or not hasattr(memory, "list_sessions"):
+            return
+        try:
+            sessions = memory.list_sessions()
+            if sessions:
+                self._switch_to_session(sessions[0]["id"])
+            else:
+                new_sess = memory.create_session("New Chat")
+                self._switch_to_session(new_sess["id"])
+            self._refresh_sessions_list()
+        except Exception as exc:
+            _LOG.warning("Failed to initialize chat session: %s", exc)
+
+    def _refresh_sessions_list(self) -> None:
+        if not hasattr(self, "worker") or self.worker is None:
+            return
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is None or not hasattr(memory, "list_sessions"):
+            return
+        try:
+            sessions = memory.list_sessions()
+            if hasattr(self, "session_drawer"):
+                self.session_drawer.set_sessions(sessions, self._active_session_id)
+        except Exception as exc:
+            _LOG.warning("Failed to refresh sessions list: %s", exc)
+
+    def _switch_to_session(self, session_id: str) -> None:
+        self._active_session_id = session_id
+        if hasattr(self, "worker") and self.worker is not None:
+            self.worker.active_session_id = session_id
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "session_messages"):
+            try:
+                raw_msgs = memory.session_messages(session_id)
+                self._messages = []
+                for role, content in raw_msgs:
+                    sender = "You" if role == "user" else "JASPER"
+                    self._messages.append((sender, content))
+                self._render_conversation()
+            except Exception as exc:
+                _LOG.warning("Failed to load messages for session %s: %s", session_id, exc)
+        if hasattr(self, "session_drawer"):
+            self.session_drawer.set_active_session(session_id)
+
+    @Slot()
+    def _on_new_chat_clicked(self) -> None:
+        if self.busy:
+            return
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "create_session"):
+            new_sess = memory.create_session("New Chat")
+            self._switch_to_session(new_sess["id"])
+            self._refresh_sessions_list()
+            self.input.clear()
+            self.input.setFocus()
+
+    @Slot(str)
+    def _on_session_selected(self, session_id: str) -> None:
+        if self.busy or session_id == self._active_session_id:
+            return
+        self._switch_to_session(session_id)
+
+    @Slot(str, str)
+    def _on_session_renamed(self, session_id: str, new_title: str) -> None:
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "update_session"):
+            memory.update_session(session_id, title=new_title, touch_updated=False)
+            self._refresh_sessions_list()
+
+    @Slot(str, bool)
+    def _on_session_pinned(self, session_id: str, is_pinned: bool) -> None:
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "update_session"):
+            memory.update_session(session_id, is_pinned=is_pinned, touch_updated=False)
+            self._refresh_sessions_list()
+
+    @Slot(str)
+    def _on_session_deleted(self, session_id: str) -> None:
+        jasper = getattr(self.worker, "jasper", None)
+        memory = getattr(jasper, "memory", None)
+        if memory is not None and hasattr(memory, "delete_session"):
+            memory.delete_session(session_id)
+            if self._active_session_id == session_id:
+                remaining = memory.list_sessions()
+                if remaining:
+                    self._switch_to_session(remaining[0]["id"])
+                else:
+                    new_sess = memory.create_session("New Chat")
+                    self._switch_to_session(new_sess["id"])
+            self._refresh_sessions_list()
+
     def closeEvent(self, event) -> None:
         if self._tray is not None:
             try:
@@ -569,6 +1223,8 @@ class MainWindow(QMainWindow):
             self._status_timer.stop()
         if hasattr(self, "_thinking_timer") and self._thinking_timer is not None:
             self._thinking_timer.stop()
+        if hasattr(self, "screen_watcher") and self.screen_watcher is not None:
+            self.screen_watcher.stop_watching("Window closed")
 
         # Safely dismiss active approval dialog without granting access
         if hasattr(self, "_active_approval_dialog") and self._active_approval_dialog is not None:
@@ -678,3 +1334,34 @@ class MainWindow(QMainWindow):
             return
         event.acceptProposedAction()
         self._set_attachment(path)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Handle pasting images from system clipboard directly into the composer."""
+        if hasattr(self, "input") and watched is self.input and event.type() == QEvent.Type.KeyPress:
+            key_event: QKeyEvent = event  # type: ignore
+            if key_event.matches(QKeySequence.StandardKey.Paste):
+                clipboard = QApplication.clipboard()
+                mime = clipboard.mimeData()
+                if mime and mime.hasImage():
+                    img = clipboard.image()
+                    if not img.isNull():
+                        from pathlib import Path as _Path
+                        from datetime import datetime as _dt
+                        target_dir = _Path("data/captures")
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        timestamp = _dt.now().strftime("%Y%m%d_%H%M%S_%f")
+                        paste_path = target_dir / f"paste_{timestamp}.png"
+                        if img.save(str(paste_path), "PNG"):
+                            self._set_attachment(str(paste_path))
+                            return True
+        return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "toast_banner") and not self.toast_banner.isHidden():
+            parent = self.toast_banner.parentWidget()
+            if parent:
+                pw = parent.width()
+                tw = self.toast_banner.width()
+                self.toast_banner.move((pw - tw) // 2, 12)
+

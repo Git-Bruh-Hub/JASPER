@@ -18,14 +18,14 @@ JASPER_MODEL = os.getenv("JASPER_MODEL", "qwen3:14b")
 JASPER_FAST_MODEL = os.getenv("JASPER_FAST_MODEL", "qwen3:8b")
 JASPER_KEEP_ALIVE = os.getenv("JASPER_KEEP_ALIVE", "5m")
 JASPER_THINK = os.getenv("JASPER_THINK", "false").lower() in {"1", "true", "yes", "on"}
-JASPER_MAX_OUTPUT_TOKENS = max(128, int(os.getenv("JASPER_MAX_OUTPUT_TOKENS", "768")))
+JASPER_MAX_OUTPUT_TOKENS = int(os.getenv("JASPER_MAX_OUTPUT_TOKENS", "-1"))
 
 # Vision is intentionally isolated from the text-model configuration so a future
 # vision provider/model can be changed without affecting normal chat routing.
 JASPER_VISION_MODEL = os.getenv("JASPER_VISION_MODEL", "qwen3-vl:8b")
 JASPER_VISION_KEEP_ALIVE = os.getenv("JASPER_VISION_KEEP_ALIVE", "5m")
 JASPER_VISION_THINK = os.getenv("JASPER_VISION_THINK", "false").lower() in {"1", "true", "yes", "on"}
-JASPER_VISION_MAX_OUTPUT_TOKENS = max(128, int(os.getenv("JASPER_VISION_MAX_OUTPUT_TOKENS", "512")))
+JASPER_VISION_MAX_OUTPUT_TOKENS = int(os.getenv("JASPER_VISION_MAX_OUTPUT_TOKENS", "-1"))
 JASPER_VISION_MAX_IMAGE_MB = max(1, int(os.getenv("JASPER_VISION_MAX_IMAGE_MB", "10")))
 JASPER_VISION_EMPTY_RESPONSE_RETRIES = max(0, int(os.getenv("JASPER_VISION_EMPTY_RESPONSE_RETRIES", "1")))
 
@@ -41,7 +41,7 @@ JASPER_STT_MODEL = os.getenv("JASPER_STT_MODEL", "small")
 JASPER_STT_DEVICE = os.getenv("JASPER_STT_DEVICE", "auto")
 JASPER_STT_GPU_COMPUTE_TYPE = os.getenv("JASPER_STT_GPU_COMPUTE_TYPE", "int8_float16")
 JASPER_STT_CPU_COMPUTE_TYPE = os.getenv("JASPER_STT_CPU_COMPUTE_TYPE", "int8")
-JASPER_STT_LANGUAGE = os.getenv("JASPER_STT_LANGUAGE", "ms")
+JASPER_STT_LANGUAGE = os.getenv("JASPER_STT_LANGUAGE", "en")
 JASPER_STT_BEAM_SIZE = max(1, int(os.getenv("JASPER_STT_BEAM_SIZE", "5")))
 JASPER_STT_INITIAL_PROMPT = os.getenv("JASPER_STT_INITIAL_PROMPT", "")
 JASPER_TTS_PROVIDER = os.getenv("JASPER_TTS_PROVIDER", "windows").lower()
@@ -58,3 +58,11 @@ JASPER_VOICE_SILENCE_SECONDS = float(os.getenv("JASPER_VOICE_SILENCE_SECONDS", "
 JASPER_VOICE_SILENCE_THRESHOLD = float(os.getenv("JASPER_VOICE_SILENCE_THRESHOLD", "0.01"))
 JASPER_VOICE_CONVERSATION_MAX_TURNS = max(1, int(os.getenv("JASPER_VOICE_CONVERSATION_MAX_TURNS", "8")))
 JASPER_VOICE_CONVERSATION_EMPTY_LIMIT = max(1, int(os.getenv("JASPER_VOICE_CONVERSATION_EMPTY_LIMIT", "2")))
+
+# Browser Automation Configuration
+JASPER_BROWSER_CHANNEL = os.getenv("JASPER_BROWSER_CHANNEL", "chrome").lower()
+JASPER_BROWSER_HEADLESS = os.getenv("JASPER_BROWSER_HEADLESS", "false").lower() in {"1", "true", "yes", "on"}
+JASPER_BROWSER_PROFILE = os.getenv("JASPER_BROWSER_PROFILE", "")
+
+# Desktop Notification Configuration
+JASPER_NOTIFICATIONS_ENABLED = os.getenv("JASPER_NOTIFICATIONS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}

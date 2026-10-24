@@ -133,6 +133,19 @@ QPushButton#micButton:disabled, QPushButton#sendButton:disabled {
     color: #666666;
 }
 
+QPushButton#micButton[watching="true"] {
+    background: #1e3828;
+    border: 1px solid #8ee6a1;
+    color: #8ee6a1;
+    font-weight: bold;
+}
+
+QLabel#watchStatus {
+    color: #8ee6a1;
+    font-weight: 600;
+    font-size: 8pt;
+}
+
 QFrame#activityFrame {
     background: #1d1d1d;
     border: 1px solid #303030;

@@ -60,6 +60,15 @@ def _parse_llm_actions(
 
         # Derive operation from tool name and resource scope from args if present
         operation = name
+
+        # Normalize arguments according to tool schema (e.g. integer parameters)
+        param_props = tool.parameters.get("properties", {}) if isinstance(tool.parameters, dict) else {}
+        for param_name, param_schema in param_props.items():
+            if param_name in args and param_schema.get("type") == "integer":
+                try:
+                    args[param_name] = int(args[param_name])
+                except (ValueError, TypeError):
+                    pass
         
         # Attempt to infer a resource scope from common argument names, default to "global"
         resource_scope = args.get("path") or args.get("url") or args.get("key") or "global"
@@ -93,10 +102,31 @@ class PlannerAdapter:
         self, task: PlannerTask, cancel_callback: Callable[[], bool] | None = None
     ) -> AgentResult:
         system_prompt = (
-            "You are the JASPER Planner agent.\n"
-            "Analyze the request and propose a plan by calling the required tools.\n"
-            "Do NOT execute the plan. Return ONLY the tool calls you want the Executor to use.\n"
-            "You must output valid tool calls."
+            "You are the JASPER Autonomous Planner agent.\n"
+            "Analyze the user request and any observations from previous action results.\n"
+            "If more information or actions are needed, propose tool calls for the Executor to run.\n"
+            "\n"
+            "Guidelines by task type:\n"
+            "1. Coding, Terminal & Local Workspace Tasks:\n"
+            "- To run tests, execute build scripts, or check git status: call `run_terminal_command(command, cwd, timeout_seconds)`.\n"
+            "- To inspect source code or text files: call `read_text_file(path, start_line, end_line)`. Use start_line and end_line for large files to inspect relevant sections.\n"
+            "- To surgically fix bugs or edit existing code: call `edit_file_chunk(path, target, replacement)`. Provide the exact matching target code block and replacement.\n"
+            "- To create new files: call `write_text_file(path, content)`.\n"
+            "- To inspect directories: call `list_directory(path)`.\n"
+            "- Iterative Problem-Solving Pattern: When fixing an issue or running tests, first run the test or inspect the code, observe the error or output in the next turn, edit the file chunk to apply the fix, and then run the test again to verify the fix.\n"
+            "\n"
+            "2. Desktop & Screen Tasks:\n"
+            "- To inspect what is on screen or check open windows: call `desktop_take_screenshot(question)`.\n"
+            "\n"
+            "3. Web & Browser Tasks:\n"
+            "- To search the web: call `browser_search(query)` or `browser_navigate(url)`.\n"
+            "- To fill a search bar or form: call `browser_type(index, text)`.\n"
+            "- To click a link or button: call `browser_click(index)`.\n"
+            "- To read page text: call `browser_read_text()`.\n"
+            "\n"
+            "Conclusion:\n"
+            "- Once you have enough information or the requested task is complete and verified, do NOT call any tools.\n"
+            "- Provide your complete, detailed answer summarizing what was done, the results, and verification evidence directly in your response."
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -142,11 +172,24 @@ class ExecutorAdapter:
         disagreement: DisagreementFeedback | None = None,
         cancel_callback: Callable[[], bool] | None = None,
     ) -> AgentResult:
+        planner_actions = plan.planner_result.proposed_actions
+        action_descriptions = [
+            f"- `{a.tool_name}` with arguments `{json.dumps(a.arguments)}`"
+            for a in planner_actions
+        ]
+
         system_prompt = (
             "You are the JASPER Executor agent.\n"
             "Execute the user's request strictly following the Planner's proposed tools.\n"
             "You must output valid tool calls."
         )
+
+        if action_descriptions:
+            system_prompt += (
+                f"\n\nThe Planner evaluated the current state and decided on the following planned action(s):\n"
+                + "\n".join(action_descriptions)
+                + "\n\nYou MUST call the exact tool(s) with the exact arguments specified by the Planner above."
+            )
 
         if disagreement:
             excess_details = [
@@ -169,6 +212,24 @@ class ExecutorAdapter:
         planner_content = "\n".join(plan.planner_result.observations)
         if planner_content:
             messages.append({"role": "assistant", "content": f"Planner thoughts: {planner_content}"})
+
+        # Fast path: If planner proposed 0 actions and there is no disagreement, adopt plan directly
+        if not plan.planner_result.proposed_actions and disagreement is None:
+            return AgentResult(
+                agent_id="executor",
+                observations=list(plan.planner_result.observations),
+                proposed_actions=[],
+            )
+
+        if action_descriptions:
+            messages.append({
+                "role": "assistant",
+                "content": f"Planned action(s) to execute:\n" + "\n".join(action_descriptions),
+            })
+            messages.append({
+                "role": "user",
+                "content": "Proceed and invoke the exact planned tool call(s) now.",
+            })
 
         tools = [t.schema() for t in self.registry.list()]
         

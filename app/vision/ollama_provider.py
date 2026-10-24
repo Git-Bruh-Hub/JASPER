@@ -37,6 +37,11 @@ class OllamaVisionProvider(VisionProvider):
     ) -> dict:
         max_image_bytes = JASPER_VISION_MAX_IMAGE_MB * 1024 * 1024
         image = load_image(image_path, max_bytes=max_image_bytes)
+        options: dict[str, Any] = {}
+        target_tokens = max_output_tokens if max_output_tokens is not None else JASPER_VISION_MAX_OUTPUT_TOKENS
+        if target_tokens and target_tokens > 0:
+            options["num_predict"] = target_tokens
+
         return {
             "model": model or JASPER_VISION_MODEL,
             "messages": [
@@ -48,7 +53,7 @@ class OllamaVisionProvider(VisionProvider):
             ],
             "stream": stream,
             "keep_alive": JASPER_VISION_KEEP_ALIVE,
-            "options": {"num_predict": max_output_tokens or JASPER_VISION_MAX_OUTPUT_TOKENS},
+            "options": options,
             "think": JASPER_VISION_THINK,
         }
 
@@ -73,7 +78,10 @@ class OllamaVisionProvider(VisionProvider):
             response.raise_for_status()
             data = response.json()
 
-        answer = ((data.get("message") or {}).get("content") or "").strip()
+        msg = data.get("message") or {}
+        content = (msg.get("content") or "").strip()
+        thinking = (msg.get("thinking") or "").strip()
+        answer = content or thinking
         if not answer:
             raise RuntimeError("Vision model returned an empty response.")
 

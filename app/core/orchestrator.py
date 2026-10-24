@@ -18,6 +18,7 @@ from app.agents.coordinator import CoordinatorState
 from app.agents.multi_agent_coordinator import MultiAgentCoordinator
 from app.agents.adapters import PlannerAdapter, ExecutorAdapter
 from app.core.response import sanitize_thinking_tags
+from app.vision.capture import requires_screen_observation
 
 SYSTEM_PROMPT = """You are JASPER, a local-first personal AI assistant.
 JASPER means Just Another Smart Program Executing Request.
@@ -56,11 +57,12 @@ Tool use:
 - After receiving tool results, answer using those results.
 - Never claim a tool ran unless its result confirms it.
 
-Vision:
-- You have a read-only image inspection tool.
-- Use it ONLY when the user explicitly mentions an image file path or asks you to look at, describe, or analyze a specific image file on their computer.
-- Do not guess image paths. If the user mentions an image but does not provide a path, ask them for the exact file path.
-- Do not use vision for text-only questions.
+Vision and Screen Awareness:
+- You have multimodal vision awareness. When an image or screen snip is attached, or when a screen capture tool runs, the vision system inspects the image and provides the visual observation in your context.
+- When an attached image or screen observation is provided, treat it as what you currently see with your own eyes.
+- NEVER state that you cannot view, see, or analyze images or screenshots when a visual observation is provided.
+- Describe what is visible on the screen or image directly and concisely.
+- If the user asks you to inspect an image file without an attached image or file path, you can use the inspect_image tool or desktop_take_screenshot tool.
 - After receiving visual observations, answer using those observations. Do not add details that are not in the visual observation.
 
 Safety:
@@ -246,23 +248,13 @@ def _format_system_fact_answer(question: str, info: dict) -> str:
     return "\n".join(sections) if sections else "I inspected the system, but I couldn't map that question to a supported system fact."
 
 
-def _response_budget(text: str) -> int:
-    """Choose a generation budget from the user's requested depth and task type."""
+def _response_budget(text: str) -> int | None:
+    """Dynamic response token budget. Returns None for natural dynamic generation."""
     normalized = " ".join(text.lower().split())
-    hardware_explanation = any(term in normalized for term in ("cpu", "processor", "gpu", "graphics card", "ram", "memory", "storage")) and any(
-        term in normalized for term in ("explain", "describe", "detail", "detailed", "how does", "what does")
-    )
-    if hardware_explanation and not any(term in normalized for term in ("in detail", "thorough", "comprehensive", "step by step", "deep dive")):
-        return 640
-    if any(term in normalized for term in ("in detail", "detailed", "thorough", "deep dive", "comprehensive", "step by step", "explain fully")):
-        return 1024
-    if any(term in normalized for term in ("analyze", "compare", "debug", "design", "plan", "why is", "how can i")):
-        return 1024
-    if any(term in normalized for term in ("recommend", "recommendation", "best", "good for", "which .* should", "what .* should i buy")):
-        return 640
-    if len(normalized.split()) <= 12:
-        return 512
-    return 640
+    if any(term in normalized for term in ("brief", "concise", "short answer", "in one sentence", "in a word")):
+        return 256
+    return None
+
 
 
 class Orchestrator:
@@ -352,18 +344,31 @@ class Orchestrator:
             on_chunk(part)
             await asyncio.sleep(0.035)
 
+    def _memory_add(self, role: str, content: str, session_id: str | None = None) -> None:
+        try:
+            self.memory.add(role, content, session_id=session_id)
+        except TypeError:
+            self.memory.add(role, content)
+
+    def _memory_recent(self, limit: int, session_id: str | None = None) -> list[tuple[str, str]]:
+        try:
+            return self.memory.recent(limit, session_id=session_id)
+        except TypeError:
+            return self.memory.recent(limit)
+
     async def respond(
         self,
         user_text: str,
         on_chunk: Callable[[str], None] | None = None,
         image_path: str | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        session_id: str | None = None,
     ) -> str:
-        self.memory.add("user", user_text)
+        self._memory_add("user", user_text, session_id=session_id)
         memory_command = self.memory_manager.parse_command(user_text)
         if memory_command is not None:
             answer = self.memory_manager.handle_command(memory_command)
-            self.memory.add("assistant", answer)
+            self._memory_add("assistant", answer, session_id=session_id)
             await self._emit_local_response(answer, on_chunk)
             self.log.info("memory command handled action=%s", memory_command.action)
             return answer
@@ -371,7 +376,7 @@ class Orchestrator:
             info = _system_observation_tool_result(self.registry, self.permissions)
             self.log.info("forced system observation for direct fact query")
             answer = _format_system_fact_answer(user_text, info)
-            self.memory.add("assistant", answer)
+            self._memory_add("assistant", answer, session_id=session_id)
             await self._emit_local_response(answer, on_chunk)
             self.log.info("chat completed model=system-observation tool_rounds=1")
             return answer
@@ -381,7 +386,7 @@ class Orchestrator:
             info = _system_observation_tool_result(self.registry, self.permissions)
             answer = render_cpu_explanation(user_text, info)
             if answer is not None:
-                self.memory.add("assistant", answer)
+                self._memory_add("assistant", answer, session_id=session_id)
                 await self._emit_local_response(answer, on_chunk)
                 self.log.info("chat completed model=local-verified-hardware tool_rounds=1")
                 return answer
@@ -392,10 +397,33 @@ class Orchestrator:
         # the normal text-LLM is never called and the Worker's error-signal path
         # displays the failure to the user.  This is intentional — JASPER must
         # not answer an image question when it cannot see the image.
+        # Auto-detect screen observation intent when no image is explicitly attached
+        if not image_path and self.vision and requires_screen_observation(user_text):
+            try:
+                from app.vision.capture import capture_active_screen
+                auto_captured = capture_active_screen()
+                image_path = str(auto_captured)
+                self.log.info("Auto screen capture triggered in orchestrator path=%s", image_path)
+            except Exception as exc:
+                self.log.info("Auto screen capture unavailable in orchestrator: %s", exc)
+
         vision_observation: str | None = None
         if image_path and self.vision:
             validated = validate_image_path(image_path)
-            result = await self.vision.analyze(validated)
+
+            # Clean, universal screen and image observation prompt
+            if user_text and user_text.strip():
+                vision_prompt = (
+                    f"{user_text.strip()}\n\n"
+                    "Describe everything visible across the entire screen in detail, "
+                    "including all open windows, applications, text, and background."
+                )
+            else:
+                vision_prompt = (
+                    "Read the entire screen and describe everything visible in detail, "
+                    "including all open windows, applications, text, and background."
+                )
+            result = await self.vision.analyze(validated, prompt=vision_prompt)
             vision_observation = result.answer
             self.log.info(
                 "vision bridge completed path=%s chars=%s",
@@ -408,21 +436,55 @@ class Orchestrator:
         memory_context = self.memory_manager.context_for(user_text)
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
-        messages.extend({"role": role, "content": content} for role, content in self.memory.recent(MAX_HISTORY_MESSAGES))
+        recent_history = self._memory_recent(MAX_HISTORY_MESSAGES, session_id=session_id)
+        if image_path:
+            # Exclude prior visual descriptions and prior hallucinated vision refusals
+            # so the chat model is neither anchored to earlier screens nor primed to repeat refusals
+            stale_markers = (
+                "Your screen shows", "What's on your screen", "What’s on your screen",
+                "live screen (", "CURRENT ATTACHED SCREEN",
+                "cannot view or analyze images", "cannot view or analyze",
+                "cannot see your screen directly", "don't have access to visual",
+                "don’t have access to visual", "desktop screenshot function",
+                "The screenshot has been saved to your desktop",
+            )
+            recent_history = [
+                (role, content) for role, content in recent_history
+                if not any(marker in content for marker in stale_markers)
+            ]
+        messages.extend({"role": role, "content": content} for role, content in recent_history)
         if _requires_system_grounding(user_text):
             info = _system_observation_tool_result(self.registry, self.permissions)
             messages.append({"role": "system", "content": _grounding_context(user_text, info)})
             self.log.info("added live system grounding for hardware explanation")
         if vision_observation:
             filename = Path(image_path).name if image_path else "attached image"
+            active_tasks: list[str] = []
+            try:
+                from app.vision.capture import get_active_desktop_tasks
+                active_tasks = get_active_desktop_tasks()
+            except Exception:
+                pass
+
+            tasks_section = ""
+            if active_tasks:
+                tasks_section = "\nACTIVE SYSTEM APPLICATIONS / RUNNING TASKS:\n- " + "\n- ".join(active_tasks) + "\n"
+
             messages.append({
                 "role": "system",
                 "content": (
-                    f"VISION OBSERVATION for the image the user attached "
-                    f"({filename}):\n\n{vision_observation}\n\n"
-                    "Use only the above visual observations when answering questions "
-                    "about the attached image. Do not add details not present in the "
-                    "observation."
+                    f"### CURRENT ATTACHED SCREEN / IMAGE (VISION OBSERVATION) ({filename}):\n"
+                    f"{vision_observation}\n"
+                    f"{tasks_section}\n"
+                    "INSTRUCTIONS:\n"
+                    "- You HAVE direct visual awareness of this image via the observation above.\n"
+                    "- Answer what you see directly without any disclaimers.\n"
+                    "- NEVER state that you cannot view, see, or analyze images or screenshots.\n"
+                    "- Prioritize this visual observation over past conversational memory.\n"
+                    "- Answer the user's question directly based on what is visually observed.\n"
+                    "- Describe all windows, applications, text, and visual content reported.\n"
+                    "- Correlate visible screen windows with active/background applications when relevant.\n"
+                    "- Do not add details not present in the observation."
                 ),
             })
         mode = self.cognitive_router.route(user_text)
@@ -434,24 +496,33 @@ class Orchestrator:
             
             self.reset_coordinator()
 
-            clean_text = re.sub(r'(?i)^/auto\s*', '', user_text).strip()
+            clean_text = re.sub(r'(?i)^/(?:auto|task|agent|autonomous)\s*', '', user_text).strip()
+            if vision_observation:
+                clean_text = f"{clean_text}\n\n[Visual Observation: {vision_observation}]"
             
             planner_adapter = self.planner_callable or PlannerAdapter(self.models, self.registry)
             executor_adapter = self.executor_callable or ExecutorAdapter(self.models, self.registry)
+            effective_max_turns = 1 if self.planner_callable is not None else 6
             
             answer = await self.multi_agent_coordinator.run_multi_agent(
                 planner_callable=planner_adapter,
                 executor_callable=executor_adapter,
                 user_text=clean_text,
                 cancel_callback=cancel_callback,
+                max_turns=effective_max_turns,
             )
-            self.memory.add("assistant", answer)
+            self._memory_add("assistant", answer, session_id=session_id)
             await self._emit_local_response(answer, on_chunk)
             return answer
 
-        answer = await self.engine.run(mode, messages, user_text, on_chunk, cancel_callback=cancel_callback)
+        user_text_for_model = (
+            f"{user_text}\n\n[Attached image: {Path(image_path).name}]"
+            if image_path
+            else user_text
+        )
+        answer = await self.engine.run(mode, messages, user_text_for_model, on_chunk, cancel_callback=cancel_callback)
 
-        self.memory.add("assistant", answer)
+        self._memory_add("assistant", answer, session_id=session_id)
         return answer
 
     async def _run_model_loop(self, messages: list[dict[str, Any]], system_prompt: str | None, use_tools: bool, mode: CognitiveMode, user_text: str, on_chunk: Callable[[str], None] | None = None, cancel_callback: Callable[[], bool] | None = None) -> str:
@@ -471,7 +542,10 @@ class Orchestrator:
 
         tools = self._tool_schemas(user_text) if use_tools else []
         max_output_tokens = _response_budget(user_text)
-        self.log.info("response budget=%s tokens", max_output_tokens)
+        if max_output_tokens is not None:
+            self.log.info("response budget=%s tokens", max_output_tokens)
+        else:
+            self.log.info("response budget=dynamic (unconstrained)")
 
         for round_number in range(1, MAX_TOOL_ROUNDS + 1):
             if cancel_callback and cancel_callback():

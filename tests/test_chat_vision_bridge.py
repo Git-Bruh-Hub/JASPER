@@ -445,3 +445,160 @@ def test_set_attachment_then_clear_resets_state(qapp, tmp_path: Path) -> None:
     finally:
         thread.quit()
         thread.wait(2000)
+
+
+@pytest.mark.asyncio
+async def test_respond_purges_stale_vision_refusals_from_history(tmp_path: Path) -> None:
+    """When an image is attached, prior hallucinated refusal messages in recent history
+    must be purged so the text model is not primed to repeat refusals."""
+    image = tmp_path / "snip_test.png"
+    image.write_bytes(PNG_BYTES)
+
+    vm = _stub_vision_manager()
+    orchestrator = _make_orchestrator(vision=vm, tmp_path=tmp_path)
+
+    # Prime memory with a previous turn where the model claimed it cannot view images
+    orchestrator.memory.add("user", "yes what do you see then?")
+    orchestrator.memory.add(
+        "assistant",
+        "I currently cannot view or analyze images directly, as I don't have access to visual data."
+    )
+
+    captured_messages: list[list[dict]] = []
+
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
+        captured_messages.append(messages)
+        return {"message": {"role": "assistant", "content": "I see the test image."}}
+
+    with patch.object(orchestrator.models.local, "chat", side_effect=fake_chat):
+        await orchestrator.respond("what ddo you see now?", image_path=str(image))
+
+    assert captured_messages, "Provider should have been called"
+    all_msgs = captured_messages[0]
+
+    # Verify stale refusal was purged from history
+    for msg in all_msgs:
+        if msg.get("role") == "assistant":
+            assert "cannot view or analyze images directly" not in msg.get("content", "")
+
+    # Verify anti-refusal directive is present in system instructions
+    system_contents = [m["content"] for m in all_msgs if m.get("role") == "system"]
+    combined_system = "\n".join(system_contents)
+    assert "NEVER state that you cannot view, see, or analyze images" in combined_system
+    assert "snip_test.png" in combined_system
+
+    # Verify model user turn has provenance
+    user_msgs = [m for m in all_msgs if m.get("role") == "user"]
+    assert any("[Attached image: snip_test.png]" in m["content"] for m in user_msgs)
+
+
+@pytest.mark.asyncio
+async def test_desktop_take_screenshot_with_vision_analysis(tmp_path: Path) -> None:
+    """desktop_take_screenshot registered in desktop_wiring automatically analyzes
+    the captured screen when a vision manager is available."""
+    from app.agents.desktop_wiring import register_desktop_tools
+    from app.tools.registry import ToolRegistry
+
+    vm = _stub_vision_manager()
+    reg = ToolRegistry()
+    register_desktop_tools(reg, vision=vm)
+
+    tool = reg.get("desktop_take_screenshot")
+    assert tool is not None
+
+    with patch("app.vision.capture.DATA_DIR", tmp_path):
+        res = await tool.handler(question="What is on screen?")
+
+    assert res["status"] == "success"
+    assert "observation" in res
+    assert res["observation"] == _StubVisionProvider.OBSERVATION
+
+
+def test_requires_screen_observation_intent() -> None:
+    """requires_screen_observation correctly detects natural language queries
+    asking to observe the user's desktop display, while excluding instructions."""
+    from app.vision.capture import requires_screen_observation
+
+    # Positive matches
+    assert requires_screen_observation("what on my screen")
+    assert requires_screen_observation("what's on my screen")
+    assert requires_screen_observation("what is on my screen right now?")
+    assert requires_screen_observation("what do you see on my screen jasper?")
+    assert requires_screen_observation("look at my screen and tell me what error is showing")
+    assert requires_screen_observation("can you see my screen?")
+    assert requires_screen_observation("check my desktop")
+    assert requires_screen_observation("inspect my monitor")
+    assert requires_screen_observation("read my screen")
+    assert requires_screen_observation("what window is open")
+    assert requires_screen_observation("what windows are open")
+    assert requires_screen_observation("what am i looking at")
+    assert requires_screen_observation("describe what's on the screen")
+
+    # Negative matches
+    assert not requires_screen_observation("")
+    assert not requires_screen_observation("how to capture screen in windows")
+    assert not requires_screen_observation("how do I record my screen")
+    assert not requires_screen_observation("what is your name?")
+    assert not requires_screen_observation("what is my cpu?")
+    assert not requires_screen_observation("write a python script")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_auto_captures_screen_on_screen_query(tmp_path: Path) -> None:
+    """When the user asks 'what on my screen' without an attached image,
+    the orchestrator automatically triggers active screen capture and visual analysis."""
+    fake_img = tmp_path / "auto_screen.png"
+    fake_img.write_bytes(PNG_BYTES)
+
+    vm = _stub_vision_manager()
+    orchestrator = _make_orchestrator(vision=vm, tmp_path=tmp_path)
+
+    captured_messages: list[list[dict]] = []
+
+    async def fake_chat(messages, *, model, tools, max_output_tokens, cancel_callback=None):
+        captured_messages.append(messages)
+        return {"message": {"role": "assistant", "content": "I see your desktop with an editor open."}}
+
+    with patch("app.vision.capture.capture_active_screen", return_value=fake_img) as mock_capture:
+        with patch.object(orchestrator.models.local, "chat", side_effect=fake_chat):
+            answer = await orchestrator.respond("what on my screen right now?")
+
+    mock_capture.assert_called_once()
+    assert "desktop" in answer
+    assert captured_messages, "Provider should have received messages"
+
+    # Verify visual observation was automatically injected
+    system_contents = [m["content"] for m in captured_messages[0] if m.get("role") == "system"]
+    combined = "\n".join(system_contents)
+    assert _StubVisionProvider.OBSERVATION in combined
+    assert "auto_screen.png" in combined
+
+
+def test_main_window_auto_captures_screen_on_send(qapp, tmp_path: Path) -> None:
+    """When the user enters a screen observation query into the main window input,
+    _send_text automatically captures the screen and emits request_text_with_image."""
+    from app.ui.main_window import MainWindow
+    from app.ui.worker import JasperWorker
+    from PySide6.QtCore import QThread
+
+    fake_img = tmp_path / "screen_auto.png"
+    fake_img.write_bytes(PNG_BYTES)
+
+    worker = MagicMock(spec=JasperWorker)
+    thread = MagicMock(spec=QThread)
+    window = MainWindow(worker, thread)
+
+    emitted_calls: list[tuple[str, str]] = []
+    window.request_text_with_image.connect(lambda txt, img: emitted_calls.append((txt, img)))
+
+    with patch("app.vision.capture.capture_active_screen", return_value=fake_img) as mock_cap:
+        window.input.setText("what's on my screen?")
+        window._send_text()
+
+    mock_cap.assert_called_once()
+    assert len(emitted_calls) == 1
+    text, path = emitted_calls[0]
+    assert text == "what's on my screen?"
+    assert path == str(fake_img)
+
+

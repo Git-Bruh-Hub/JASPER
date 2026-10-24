@@ -24,12 +24,21 @@ class OllamaProvider(ModelProvider):
         stream: bool,
         max_output_tokens: int | None,
     ) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        target_tokens = max_output_tokens if max_output_tokens is not None else JASPER_MAX_OUTPUT_TOKENS
+        if target_tokens and target_tokens > 0:
+            options["num_predict"] = target_tokens
+
+        # Dynamic context sizing to prevent clipping long web pages / DOM snapshots
+        msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        options["num_ctx"] = max(8192, (msg_chars // 3) + 4096)
+
         payload: dict[str, Any] = {
             "model": model or JASPER_MODEL,
             "messages": messages,
             "stream": stream,
             "keep_alive": keep_alive,
-            "options": {"num_predict": max_output_tokens or JASPER_MAX_OUTPUT_TOKENS},
+            "options": options,
         }
         if tools:
             payload["tools"] = tools

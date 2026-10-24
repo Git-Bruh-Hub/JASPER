@@ -98,7 +98,7 @@ class TestRouterDeep:
 
 
 class TestRouterAutonomous:
-    """Explicit /auto requests should be AUTONOMOUS."""
+    """Explicit /auto, /task, and natural action intent requests should be AUTONOMOUS."""
 
     router = CognitiveRouter()
 
@@ -107,10 +107,23 @@ class TestRouterAutonomous:
         "/auto   do something",
         "/auto",
         "/auto ",
-        "/auto Analyze this file."
+        "/auto Analyze this file.",
+        "/task run tests",
+        "/agent check system health",
+        "/autonomous audit",
+        "Run pytest on the test suite",
+        "Run the regression tests and summarize failures",
+        "Execute test suite",
+        "Audit my system and report memory and GPU status",
+        "Scan recent code changes for safety invariants",
+        "Search the web for PySide6 tips and summarize",
+        "Inspect my screen and check running apps",
+        "Plan and execute a security audit",
+        "Autonomously investigate this bug",
     ])
     def test_autonomous_requests(self, text: str):
         assert self.router.route(text) == CognitiveMode.AUTONOMOUS
+
 
 
 # ===================================================================

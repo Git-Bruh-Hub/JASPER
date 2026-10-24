@@ -1,4 +1,5 @@
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,14 +27,62 @@ class SQLiteMemory:
         with self._connect() as db:
             db.execute(
                 """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    is_pinned INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_is_pinned ON sessions(is_pinned DESC)"
+            )
+            db.execute(
+                """
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
                     role TEXT NOT NULL,
-                    content TEXT NOT NULL
+                    content TEXT NOT NULL,
+                    session_id TEXT
                 )
                 """
             )
+            # Migration check: ensure session_id column exists on events
+            event_columns = [
+                row["name"] for row in db.execute("PRAGMA table_info(events)").fetchall()
+            ]
+            if "session_id" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN session_id TEXT")
+
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id)"
+            )
+
+            # Preserve pre-existing events with NULL session_id into "Previous History"
+            null_count_row = db.execute(
+                "SELECT COUNT(*) as count FROM events WHERE session_id IS NULL"
+            ).fetchone()
+            if null_count_row and null_count_row["count"] > 0:
+                legacy_id = "legacy_history"
+                now = datetime.now(timezone.utc).isoformat()
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO sessions (id, title, created_at, updated_at, is_pinned)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (legacy_id, "Previous History", now, now, 0),
+                )
+                db.execute(
+                    "UPDATE events SET session_id = ? WHERE session_id IS NULL",
+                    (legacy_id,),
+                )
+
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memories (
@@ -55,22 +104,116 @@ class SQLiteMemory:
                 "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category)"
             )
 
-    def add(self, role: str, content: str) -> None:
+    def create_session(self, title: str = "New Chat", session_id: str | None = None) -> dict:
+        sid = session_id or str(uuid.uuid4())
+        clean_title = title.strip() or "New Chat"
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO sessions (id, title, created_at, updated_at, is_pinned)
+                VALUES (?, ?, ?, ?, 0)
+                """,
+                (sid, clean_title, now, now),
+            )
+        return {
+            "id": sid,
+            "title": clean_title,
+            "created_at": now,
+            "updated_at": now,
+            "is_pinned": 0,
+        }
+
+    def get_session(self, session_id: str) -> dict | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT id, title, created_at, updated_at, is_pinned FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_sessions(self) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, title, created_at, updated_at, is_pinned
+                FROM sessions
+                ORDER BY is_pinned DESC, updated_at DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_session(
+        self,
+        session_id: str,
+        title: str | None = None,
+        is_pinned: bool | None = None,
+        touch_updated: bool = True,
+    ) -> bool:
+        updates = []
+        params = []
+        now = datetime.now(timezone.utc).isoformat()
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title.strip() or "New Chat")
+        if is_pinned is not None:
+            updates.append("is_pinned = ?")
+            params.append(1 if is_pinned else 0)
+        if touch_updated:
+            updates.append("updated_at = ?")
+            params.append(now)
+        if not updates:
+            return False
+        params.append(session_id)
+        with self._connect() as db:
+            cursor = db.execute(
+                f"UPDATE sessions SET {', '.join(updates)} WHERE id = ?",
+                tuple(params),
+            )
+            return cursor.rowcount > 0
+
+    def delete_session(self, session_id: str) -> bool:
+        with self._connect() as db:
+            db.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
+            cursor = db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return cursor.rowcount > 0
+
+    def add(self, role: str, content: str, session_id: str | None = None) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             db.execute(
-                "INSERT INTO events(timestamp, role, content) VALUES (?, ?, ?)",
-                (timestamp, role, content),
+                "INSERT INTO events(timestamp, role, content, session_id) VALUES (?, ?, ?, ?)",
+                (timestamp, role, content, session_id),
             )
+            if session_id:
+                db.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                    (timestamp, session_id),
+                )
 
-    def recent(self, limit: int = 20) -> list[tuple[str, str]]:
+    def recent(self, limit: int = 20, session_id: str | None = None) -> list[tuple[str, str]]:
         limit = max(1, int(limit))
         with self._connect() as db:
-            rows = db.execute(
-                "SELECT role, content FROM events ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            if session_id:
+                rows = db.execute(
+                    "SELECT role, content FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT role, content FROM events ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
         return [(row["role"], row["content"]) for row in reversed(rows)]
+
+    def session_messages(self, session_id: str) -> list[tuple[str, str]]:
+        """Return all messages for a specific session in chronological order."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT role, content FROM events WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+        return [(row["role"], row["content"]) for row in rows]
 
     def remember(
         self,

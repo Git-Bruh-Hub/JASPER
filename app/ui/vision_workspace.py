@@ -68,9 +68,15 @@ class VisionWorkspace(QWidget):
         layout.addWidget(self.preview, 1)
 
         controls = QHBoxLayout()
+        controls.setSpacing(8)
         self.open_button = QPushButton("Open Image")
         self.open_button.clicked.connect(self._open_image)
         controls.addWidget(self.open_button)
+
+        self.capture_button = QPushButton("📸 Capture Screen")
+        self.capture_button.setToolTip("Capture desktop screen into Vision workspace")
+        self.capture_button.clicked.connect(self._capture_screen)
+        controls.addWidget(self.capture_button)
 
         self.path_label = QLabel("No image selected")
         self.path_label.setObjectName("workspaceHint")
@@ -198,6 +204,48 @@ class VisionWorkspace(QWidget):
 
         event.acceptProposedAction()
         self.set_image(str(path))
+
+    @Slot()
+    def _capture_screen(self) -> None:
+        """Launch interactive screen snipping overlay across all monitors."""
+        if self._busy:
+            return
+
+        window = self.window()
+        if window:
+            window.hide()
+
+        def do_snip() -> None:
+            try:
+                from app.ui.screen_snipper import ScreenSnipper
+                if not hasattr(self, "_snipper") or self._snipper is None:
+                    self._snipper = ScreenSnipper()
+                    self._snipper.snipped.connect(self._on_snipped)
+                    self._snipper.cancelled.connect(self._on_snip_cancelled)
+                self._snipper.start_snip()
+            except Exception as exc:
+                if window:
+                    window.show()
+                    window.activateWindow()
+                self.show_error(f"Failed to launch screen snipper: {exc}")
+
+        QTimer.singleShot(150, do_snip)
+
+    @Slot(str)
+    def _on_snipped(self, file_path: str) -> None:
+        window = self.window()
+        if window:
+            window.show()
+            window.activateWindow()
+        self.set_image(file_path)
+
+    @Slot()
+    def _on_snip_cancelled(self) -> None:
+        window = self.window()
+        if window:
+            window.show()
+            window.activateWindow()
+
 
     @Slot()
     def _open_image(self) -> None:

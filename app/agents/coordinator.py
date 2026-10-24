@@ -80,8 +80,8 @@ _LEGAL_TRANSITIONS: dict[CoordinatorState, frozenset[CoordinatorState]] = {
     CoordinatorState.PLANNING:  frozenset({CoordinatorState.ACTING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
     CoordinatorState.ACTING:    frozenset({CoordinatorState.APPROVING, CoordinatorState.OBSERVING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
     CoordinatorState.APPROVING: frozenset({CoordinatorState.ACTING, CoordinatorState.OBSERVING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
-    CoordinatorState.OBSERVING: frozenset({CoordinatorState.VERIFYING, CoordinatorState.ACTING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
-    CoordinatorState.VERIFYING: frozenset({CoordinatorState.IDLE, CoordinatorState.ACTING, CoordinatorState.ERROR}),
+    CoordinatorState.OBSERVING: frozenset({CoordinatorState.VERIFYING, CoordinatorState.PLANNING, CoordinatorState.ACTING, CoordinatorState.IDLE, CoordinatorState.ERROR}),
+    CoordinatorState.VERIFYING: frozenset({CoordinatorState.IDLE, CoordinatorState.PLANNING, CoordinatorState.ACTING, CoordinatorState.ERROR}),
     CoordinatorState.ERROR:     frozenset({CoordinatorState.IDLE}),
 }
 
@@ -97,10 +97,10 @@ class CoordinatorBudget:
     Exceeding any limit raises ``BudgetExhaustedError`` and terminates the
     run.  Limits default to conservative values safe for local hardware.
     """
-    max_agent_rounds: int = 6       # total agent invocations
+    max_agent_rounds: int = 12      # total agent invocations
     max_tool_calls: int = 10        # total tool executions
     max_approval_requests: int = 5  # total approval gates opened
-    timeout_seconds: float = 120.0  # wall-clock hard limit
+    timeout_seconds: float = 180.0  # wall-clock hard limit
 
     # Runtime counters (reset on each run)
     _agent_rounds: int = field(default=0, init=False, repr=False)
@@ -764,16 +764,104 @@ class Coordinator:
 
     @staticmethod
     def _synthesise_answer(result: AgentResult, tool_outputs: list[dict[str, Any]]) -> str:
-        """Combine agent observations and tool outputs into a final text answer."""
-        parts: list[str] = []
-        if result.observations:
-            parts.extend(result.observations)
+        """Combine agent observations and tool outputs into a final text answer.
+
+        When observations exist (e.g. from autonomous multi-turn reasoning or agent
+        synthesis), they are presented cleanly as the hero response. Technical tool
+        activities (like navigation or clicks) are rendered as compact activity badges
+        rather than dumping raw DOM snapshots or full page text.
+        """
+        has_hero = bool(result.observations and any(obs.strip() for obs in result.observations))
+        hero_parts: list[str] = [obs for obs in result.observations if obs.strip()] if result.observations else []
+
+        activity_badges: list[str] = []
+        fallback_parts: list[str] = []
+
         for output in tool_outputs:
             if output.get("status") == "success":
-                parts.append(f"[Tool {output['tool']}]: {output['result']}")
+                tool_name = output.get("tool", "")
+                raw_res = output.get("result", "")
+                try:
+                    res_data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
+                except Exception:
+                    res_data = raw_res
+
+                if isinstance(res_data, dict):
+                    if "path" in res_data:
+                        path = res_data["path"]
+                        bytes_w = res_data.get("bytes_written", 0)
+                        msg = f"✅ Successfully wrote `{path}` ({bytes_w} bytes)."
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name in ("browser_navigate", "browser_search"):
+                        url = res_data.get("url", "")
+                        title = res_data.get("title", "")
+                        count = res_data.get("interactive_count", 0)
+                        badge = f"🌐 Navigated to `{url}` (Found {count} interactive elements)"
+                        activity_badges.append(badge)
+
+                        snapshot = res_data.get("snapshot", "")
+                        lines = [ln for ln in snapshot.splitlines() if ln.strip()]
+                        if len(lines) > 15:
+                            preview_text = "\n".join(lines[:12]) + f"\n... [{len(lines) - 12} more interactive elements]"
+                        else:
+                            preview_text = snapshot
+                        fallback_parts.append(
+                            f"🌐 Navigated to {url} (Title: '{title}'). Found {count} interactive elements.\n\n```\n{preview_text}\n```"
+                        )
+                    elif tool_name == "browser_click":
+                        target = res_data.get("target", "")
+                        new_title = res_data.get("new_title", "")
+                        title_info = f" (New Title: '{new_title}')" if new_title else ""
+                        msg = f"👆 Clicked {target}{title_info}"
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name == "browser_type":
+                        target = res_data.get("target", "")
+                        val = res_data.get("value", "")
+                        msg = f"✍ Typed into {target}: \"{val}\""
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name == "browser_read_text":
+                        title = res_data.get("title", "")
+                        text = res_data.get("text", "")
+                        badge = f"📖 Read page content: '{title}'"
+                        activity_badges.append(badge)
+                        fallback_parts.append(f"📖 Page Content ({title}):\n\n{text}")
+                    elif tool_name == "browser_close":
+                        msg = "🛑 Closed browser session."
+                        activity_badges.append(msg)
+                        fallback_parts.append(msg)
+                    elif tool_name == "desktop_take_screenshot":
+                        img_path = res_data.get("path", "")
+                        obs = res_data.get("observation", "")
+                        msg = f"📸 Captured desktop screen: `{img_path}`"
+                        activity_badges.append(msg)
+                        if obs and obs != f"Screenshot saved to {res_data.get('filename', '')}.":
+                            fallback_parts.append(f"📸 Screen Visual Observation:\n{obs}")
+                        else:
+                            fallback_parts.append(msg)
+                    else:
+                        activity_badges.append(f"🔧 Tool `{tool_name}`: completed")
+                        fallback_parts.append(f"[Tool {tool_name}]: {raw_res}")
+                else:
+                    activity_badges.append(f"🔧 Tool `{tool_name}`: completed")
+                    fallback_parts.append(f"[Tool {tool_name}]: {raw_res}")
             elif output.get("status") == "UNKNOWN":
-                parts.append(f"[Tool {output['tool']}]: outcome unknown — {output.get('error', '')}")
+                msg = f"⚠️ Tool `{output.get('tool', '')}`: outcome unknown — {output.get('error', '')}"
+                activity_badges.append(msg)
+                fallback_parts.append(msg)
             else:
-                parts.append(f"[Tool {output['tool']}] failed: {output.get('error', 'unknown error')}")
-        combined = "\n".join(parts) if parts else ""
+                msg = f"❌ Tool `{output.get('tool', '')}` failed: {output.get('error', 'unknown error')}"
+                activity_badges.append(msg)
+                fallback_parts.append(msg)
+
+        if has_hero:
+            parts = list(hero_parts)
+            if activity_badges:
+                parts.append("---\n**Actions Taken:**\n" + "\n".join(f"* {b}" for b in activity_badges))
+            combined = "\n\n".join(parts)
+        else:
+            combined = "\n\n".join(fallback_parts) if fallback_parts else ""
+
         return sanitize_thinking_tags(combined)

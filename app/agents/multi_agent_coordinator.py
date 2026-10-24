@@ -149,6 +149,7 @@ class MultiAgentCoordinator(Coordinator):
         user_text: str,
         cancel_callback: Callable[[], bool] | None = None,
         max_disagreement_rounds: int = 3,
+        max_turns: int = 1,
     ) -> str:
         """Run a complete Planner -> Executor -> tool pipeline.
 
@@ -196,6 +197,7 @@ class MultiAgentCoordinator(Coordinator):
                     user_text,
                     cancel_callback,
                     max_disagreement_rounds,
+                    max_turns,
                 ),
                 timeout=self._budget.timeout_seconds,
             )
@@ -304,6 +306,70 @@ class MultiAgentCoordinator(Coordinator):
     # Internal multi-agent cycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _format_turn_observations(tool_outputs: list[dict[str, Any]]) -> str:
+        """Format outputs from a turn's executed tools as observation feedback for the next turn."""
+        parts: list[str] = []
+        for out in tool_outputs:
+            tool_name = out.get("tool", "unknown_tool")
+            status = out.get("status", "unknown")
+            if status == "success":
+                raw_res = out.get("result", "")
+                try:
+                    data = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
+                except Exception:
+                    data = raw_res
+
+                if isinstance(data, dict):
+                    if "snapshot" in data or "url" in data:
+                        title = data.get("title", "")
+                        url = data.get("url", "")
+                        snapshot = data.get("snapshot", "")
+                        parts.append(
+                            f"[Tool {tool_name}]: Successfully navigated to {url} (Title: '{title}').\n"
+                            f"Page Title: {title}\nCurrent URL: {url}\n{snapshot}"
+                        )
+                    elif "text" in data:
+                        title = data.get("title", "")
+                        text = data.get("text", "")
+                        parts.append(f"[Tool {tool_name}]: Page Content ({title}):\n{text}")
+                    elif "command" in data:
+                        cmd = data.get("command", "")
+                        exit_code = data.get("exit_code", 0)
+                        stdout = (data.get("stdout") or "").strip()
+                        stderr = (data.get("stderr") or "").strip()
+                        duration = data.get("duration_seconds", 0)
+                        term_lines = [f"Command `{cmd}` exited with code {exit_code} ({duration}s)."]
+                        if stdout:
+                            term_lines.append(f"STDOUT:\n{stdout}")
+                        if stderr:
+                            term_lines.append(f"STDERR:\n{stderr}")
+                        if not stdout and not stderr:
+                            term_lines.append("(No output captured)")
+                        parts.append(f"[Tool {tool_name}]: " + "\n".join(term_lines))
+                    elif "message" in data:
+                        parts.append(f"[Tool {tool_name}]: {data.get('message')}")
+                    elif "observation" in data:
+                        obs = data.get("observation", "")
+                        fname = data.get("filename") or Path(data.get("path", "")).name
+                        parts.append(f"[Tool {tool_name}]: Screenshot '{fname}' captured.\nVisual observation: {obs}")
+                    elif "target" in data:
+                        target = data.get("target", "")
+                        parts.append(f"[Tool {tool_name}]: Target: {target}, Status: {data.get('status', 'success')}")
+                    elif "path" in data:
+                        parts.append(f"[Tool {tool_name}]: Wrote {data.get('path')} ({data.get('bytes_written', 0)} bytes).")
+                    elif "_raw" in data:
+                        parts.append(f"[Tool {tool_name}]: {data['_raw']}")
+                    else:
+                        parts.append(f"[Tool {tool_name}]: {json.dumps(data)}")
+                else:
+                    parts.append(f"[Tool {tool_name}]: {data}")
+            else:
+                err = out.get("error", "Unknown error")
+                parts.append(f"[Tool {tool_name} ERROR]: {err}")
+
+        return "\n\n".join(parts)
+
     async def _run_multi_agent_cycle(
         self,
         planner_callable: Callable[[PlannerTask], Coroutine[Any, Any, AgentResult]],
@@ -314,147 +380,171 @@ class MultiAgentCoordinator(Coordinator):
         user_text: str,
         cancel_callback: Callable[[], bool] | None,
         max_disagreement_rounds: int,
+        max_turns: int = 1,
     ) -> str:
-        # ----------------------------------------------------------------
-        # Phase 1: Planner
-        # ----------------------------------------------------------------
-        self._transition(CoordinatorState.PLANNING)
-        self._check_cancelled(cancel_callback)
+        current_context = user_text
+        all_tool_outputs: list[dict[str, Any]] = []
+        last_result: AgentResult | None = None
 
-        task = PlannerTask(user_text=user_text)
-
-        planner_result_raw = await self._planner.invoke(
-            callable_=planner_callable,
-            task=task,
-            budget=self._budget,
-            cancel_callback=cancel_callback,
-            emit_terminal=False,
-        )
-
-        # Pre-execution validation gate (invariant: invalid plan never reaches Executor)
-        self._validate_planner_result(planner_result_raw, task.task_id)
-
-        # Emit planner terminal SUCCESS only after validation passes
-        record(
-            AuditEvent.PLANNER_INVOKED,
-            actor="planner",
-            task_id=task.task_id,
-            status="SUCCESS",
-            detail=f"proposed_actions={len(planner_result_raw.proposed_actions)}",
-        )
-
-        # Build the typed handoff (wraps validated raw AgentResult).
-        planner_handoff = PlannerResult(
-            task_id=task.task_id,
-            user_text=user_text,
-            planner_result=planner_result_raw,
-        )
-
-        # ----------------------------------------------------------------
-        # Phase 2: Executor loop (bounded by DisagreementResolver)
-        # ----------------------------------------------------------------
-        self._transition(CoordinatorState.ACTING)
-        self._check_cancelled(cancel_callback)
-
-        resolver = DisagreementResolver(max_rounds=max_disagreement_rounds)
-        feedback: DisagreementFeedback | None = None
-        executor_result: AgentResult | None = None
-
-        while True:
+        for turn_idx in range(max_turns):
             self._check_cancelled(cancel_callback)
 
-            executor_result = await self._executor.invoke(
-                callable_=executor_callable,
-                handoff=planner_handoff,
+            # ----------------------------------------------------------------
+            # Phase 1: Planner
+            # ----------------------------------------------------------------
+            self._transition(CoordinatorState.PLANNING)
+            self._check_cancelled(cancel_callback)
+
+            task = PlannerTask(user_text=current_context)
+
+            planner_result_raw = await self._planner.invoke(
+                callable_=planner_callable,
+                task=task,
                 budget=self._budget,
-                feedback=feedback,
                 cancel_callback=cancel_callback,
+                emit_terminal=False,
             )
 
-            # Check for Planner/Executor disagreement.
-            planner_actions = planner_handoff.planner_result.proposed_actions
-            executor_actions = executor_result.proposed_actions
+            # Pre-execution validation gate (invariant: invalid plan never reaches Executor)
+            self._validate_planner_result(planner_result_raw, task.task_id)
 
-            if resolver.is_disagreement(planner_actions, executor_actions):
-                excess_actions = resolver.get_excess_actions(planner_actions, executor_actions)
-                planner_actions_tuple = tuple(planner_actions)
+            # Emit planner terminal SUCCESS only after validation passes
+            record(
+                AuditEvent.PLANNER_INVOKED,
+                actor="planner",
+                task_id=task.task_id,
+                status="SUCCESS",
+                detail=f"proposed_actions={len(planner_result_raw.proposed_actions)}",
+            )
 
-                unexpected_summary = [f"{e.tool_name}(excess={e.excess_count})" for e in excess_actions]
+            # Build the typed handoff (wraps validated raw AgentResult).
+            planner_handoff = PlannerResult(
+                task_id=task.task_id,
+                user_text=current_context,
+                planner_result=planner_result_raw,
+            )
 
-                record(
-                    AuditEvent.DISAGREEMENT_DETECTED,
-                    actor="coordinator",
-                    task_id=task.task_id,
-                    status="DETECTED",
-                    detail=(
-                        f"excess_actions={unexpected_summary!r} "
-                        f"round={resolver._rounds + 1}/{max_disagreement_rounds}"
-                    ),
+            # ----------------------------------------------------------------
+            # Phase 2: Executor loop (bounded by DisagreementResolver)
+            # ----------------------------------------------------------------
+            self._transition(CoordinatorState.ACTING)
+            self._check_cancelled(cancel_callback)
+
+            resolver = DisagreementResolver(max_rounds=max_disagreement_rounds)
+            feedback: DisagreementFeedback | None = None
+            executor_result: AgentResult | None = None
+
+            while True:
+                self._check_cancelled(cancel_callback)
+
+                executor_result = await self._executor.invoke(
+                    callable_=executor_callable,
+                    handoff=planner_handoff,
+                    budget=self._budget,
+                    feedback=feedback,
+                    cancel_callback=cancel_callback,
                 )
-                _LOG.warning(
-                    "planner/executor disagreement task_id=%s excess_actions=%s round=%d/%d",
-                    task.task_id, unexpected_summary,
-                    resolver._rounds + 1, max_disagreement_rounds,
-                )
 
-                resolver.record_round()
+                # Check for Planner/Executor disagreement.
+                planner_actions = planner_handoff.planner_result.proposed_actions
+                executor_actions = executor_result.proposed_actions
 
-                try:
-                    resolver.assert_not_limit_reached()
-                except DisagreementError as exc:
+                if resolver.is_disagreement(planner_actions, executor_actions):
+                    excess_actions = resolver.get_excess_actions(planner_actions, executor_actions)
+                    planner_actions_tuple = tuple(planner_actions)
+
+                    unexpected_summary = [f"{e.tool_name}(excess={e.excess_count})" for e in excess_actions]
+
                     record(
-                        AuditEvent.DISAGREEMENT_HALTED,
+                        AuditEvent.DISAGREEMENT_DETECTED,
                         actor="coordinator",
                         task_id=task.task_id,
-                        status="HALTED",
-                        detail=str(exc),
+                        status="DETECTED",
+                        detail=(
+                            f"excess_actions={unexpected_summary!r} "
+                            f"round={resolver._rounds + 1}/{max_disagreement_rounds}"
+                        ),
                     )
-                    _LOG.error(
-                        "disagreement resolution limit reached; halting task_id=%s",
-                        task.task_id,
+                    _LOG.warning(
+                        "planner/executor disagreement task_id=%s excess_actions=%s round=%d/%d",
+                        task.task_id, unexpected_summary,
+                        resolver._rounds + 1, max_disagreement_rounds,
                     )
-                    self._state = CoordinatorState.ERROR
-                    raise
 
-                # Build typed feedback for the next Executor attempt.
-                feedback = DisagreementFeedback(
-                    round_number=resolver._rounds,
-                    max_rounds=max_disagreement_rounds,
-                    excess_actions=excess_actions,
-                    planner_actions=planner_actions_tuple,
-                )
-                # Retry the Executor with explicit disagreement context.
-                continue
+                    resolver.record_round()
 
-            # No disagreement -- proceed to tool execution.
-            break
+                    try:
+                        resolver.assert_not_limit_reached()
+                    except DisagreementError as exc:
+                        record(
+                            AuditEvent.DISAGREEMENT_HALTED,
+                            actor="coordinator",
+                            task_id=task.task_id,
+                            status="HALTED",
+                            detail=str(exc),
+                        )
+                        _LOG.error(
+                            "disagreement resolution limit reached; halting task_id=%s",
+                            task.task_id,
+                        )
+                        self._state = CoordinatorState.ERROR
+                        raise
 
-        assert executor_result is not None
+                    # Build typed feedback for the next Executor attempt.
+                    feedback = DisagreementFeedback(
+                        round_number=resolver._rounds,
+                        max_rounds=max_disagreement_rounds,
+                        excess_actions=excess_actions,
+                        planner_actions=planner_actions_tuple,
+                    )
+                    # Retry the Executor with explicit disagreement context.
+                    continue
 
-        # ----------------------------------------------------------------
-        # Phase 3: Execute Executor ProposedActions
-        # (inherited _execute_action: permission -> approval -> tool -> audit)
-        # ----------------------------------------------------------------
-        tool_outputs: list[dict[str, Any]] = []
-        for action in executor_result.proposed_actions:
+                # No disagreement -- proceed to tool execution.
+                break
+
+            assert executor_result is not None
+            last_result = executor_result
+
+            # ----------------------------------------------------------------
+            # Phase 3: Execute Executor ProposedActions
+            # (inherited _execute_action: permission -> approval -> tool -> audit)
+            # ----------------------------------------------------------------
+            turn_tool_outputs: list[dict[str, Any]] = []
+            for action in executor_result.proposed_actions:
+                self._check_cancelled(cancel_callback)
+                output = await self._execute_action(action, cancel_callback)
+                turn_tool_outputs.append(output)
+                all_tool_outputs.append(output)
+
+            # ----------------------------------------------------------------
+            # Phase 4: Observe
+            # ----------------------------------------------------------------
+            self._transition(CoordinatorState.OBSERVING)
             self._check_cancelled(cancel_callback)
-            output = await self._execute_action(action, cancel_callback)
-            tool_outputs.append(output)
 
-        # ----------------------------------------------------------------
-        # Phase 4: Observe
-        # ----------------------------------------------------------------
-        self._transition(CoordinatorState.OBSERVING)
-        self._check_cancelled(cancel_callback)
+            # ----------------------------------------------------------------
+            # Phase 5: Verify (if a verification result is present)
+            # ----------------------------------------------------------------
+            self._transition(CoordinatorState.VERIFYING)
+            self._check_cancelled(cancel_callback)
 
-        # ----------------------------------------------------------------
-        # Phase 5: Verify (if a verification result is present)
-        # ----------------------------------------------------------------
-        self._transition(CoordinatorState.VERIFYING)
-        self._check_cancelled(cancel_callback)
+            if executor_result.verification is not None:
+                self._handle_verification(executor_result.verification)
 
-        if executor_result.verification is not None:
-            self._handle_verification(executor_result.verification)
+            # Check if finished: if planner proposed 0 actions, task is complete!
+            if not planner_result_raw.proposed_actions:
+                _LOG.info(
+                    "Planner proposed 0 actions at turn %d/%d; concluding multi-turn loop.",
+                    turn_idx + 1, max_turns,
+                )
+                break
+
+            # If more turns remain, prepare feedback context for next turn
+            if turn_idx < max_turns - 1:
+                obs_text = self._format_turn_observations(turn_tool_outputs)
+                current_context = f"{current_context}\n\n## Action Results (Turn {turn_idx + 1}):\n{obs_text}"
 
         self._transition(CoordinatorState.IDLE)
-        return self._synthesise_answer(executor_result, tool_outputs)
+        assert last_result is not None
+        return self._synthesise_answer(last_result, all_tool_outputs)

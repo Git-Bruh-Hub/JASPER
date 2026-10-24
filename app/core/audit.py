@@ -28,10 +28,45 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from collections import deque
 from enum import Enum
-from typing import Any
+import threading
+from typing import Any, Callable
 
 _LOG = logging.getLogger("jasper.audit")
+
+_AUDIT_LOCK = threading.Lock()
+_AUDIT_HISTORY: deque[dict[str, Any]] = deque(maxlen=500)
+_AUDIT_LISTENERS: list[Callable[[dict[str, Any]], None]] = []
+
+
+def add_audit_listener(fn: Callable[[dict[str, Any]], None]) -> None:
+    """Register a listener invoked whenever an audit record is recorded."""
+    with _AUDIT_LOCK:
+        if fn not in _AUDIT_LISTENERS:
+            _AUDIT_LISTENERS.append(fn)
+
+
+def remove_audit_listener(fn: Callable[[dict[str, Any]], None]) -> None:
+    """Remove a previously registered audit listener."""
+    with _AUDIT_LOCK:
+        if fn in _AUDIT_LISTENERS:
+            _AUDIT_LISTENERS.remove(fn)
+
+
+def get_recent_audit_records(limit: int = 100, filter_event: str | None = None) -> list[dict[str, Any]]:
+    """Return a copy of recent audit records, newest first."""
+    with _AUDIT_LOCK:
+        records = list(_AUDIT_HISTORY)
+    if filter_event:
+        records = [r for r in records if r.get("event") == filter_event]
+    return records[-limit:][::-1]
+
+
+def clear_audit_records() -> None:
+    """Clear in-memory audit history (useful for tests or user reset)."""
+    with _AUDIT_LOCK:
+        _AUDIT_HISTORY.clear()
 
 
 class AuditEvent(str, Enum):
@@ -74,7 +109,7 @@ def record(
     attempt: int | None = None,
     task_id: str = "",
 ) -> None:
-    """Emit one structured audit record to the ``jasper.audit`` logger.
+    """Emit one structured audit record to the ``jasper.audit`` logger and active listeners.
 
     All callers MUST provide at minimum ``event`` and ``actor``.  All
     other fields should be populated to the extent the call site has
@@ -98,4 +133,17 @@ def record(
         payload["attempt"] = attempt
     if task_id:
         payload["task_id"] = task_id
+
+    # Store in ring buffer and notify listeners
+    with _AUDIT_LOCK:
+        _AUDIT_HISTORY.append(dict(payload))
+        listeners = list(_AUDIT_LISTENERS)
+
     _LOG.info(json.dumps(payload, ensure_ascii=False))
+
+    for listener in listeners:
+        try:
+            listener(dict(payload))
+        except Exception as exc:
+            _LOG.debug("Error in audit listener: %s", exc)
+

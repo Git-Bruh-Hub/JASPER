@@ -54,6 +54,31 @@ _CONJUNCTION_SPLIT = re.compile(
 )
 
 
+_AUTONOMOUS_PREFIX = re.compile(
+    r"^(?:/(?:auto|task|agent|autonomous))\b",
+    re.IGNORECASE,
+)
+
+_AUTONOMOUS_EXPLICIT_KEYWORD = re.compile(
+    r"\b(?:autonomously|as an autonomous agent|autonomous execution|agent mode)\b",
+    re.IGNORECASE,
+)
+
+_AUTONOMOUS_ACTION_INTENT = re.compile(
+    r"^(?:please\s+)?(?:"
+    r"plan and execute\b|"
+    r"autonomously\b|"
+    r"(?:run|execute)\s+(?:the\s+|a\s+|all\s+)?(?:regression\s+tests?|pytest|test\s+suite|tests)\b|"
+    r"(?:run|execute)\s+.*(?:and\s+fix|and\s+debug)\b|"
+    r"(?:fix|debug|resolve)\s+(?:the\s+)?(?:failing\s+)?(?:tests?|bugs?|failures?|issues?)\b|"
+    r"(?:audit|scan|perform\s+an?\s+audit\s+of)\s+(?:my\s+|the\s+)?(?:system|desktop|security|codebase|recent\s+code\s+changes)\b|"
+    r"inspect\s+my\s+screen(?:\s*,|\s+and)\s+check\s+running\s+apps\b|"
+    r"search\s+the\s+web\s+for\s+.*and\s+summarize\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _word_count(text: str) -> int:
     """Approximate word count."""
     return len(text.split())
@@ -84,9 +109,14 @@ class CognitiveRouter:
         """Deterministically route the request to a cognitive mode."""
         text = user_text.lower().strip()
         
-        # --- Slice 7: Autonomous Routing Boundary ---
-        if text == "/auto" or text.startswith("/auto "):
+        # --- Slice 7 / Natural Autonomous Routing Boundary ---
+        if (
+            _AUTONOMOUS_PREFIX.search(text)
+            or _AUTONOMOUS_EXPLICIT_KEYWORD.search(text)
+            or _AUTONOMOUS_ACTION_INTENT.search(text)
+        ):
             return CognitiveMode.AUTONOMOUS
+
         
         words = _word_count(text)
 
