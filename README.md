@@ -1,230 +1,120 @@
-# JASPER (v0.8 Core)
+# JASPER (v0.8.0)
 
 **JASPER = Just Another Smart Program Executing Request**
 
-Local-first personal AI assistant foundation for Windows 11. Built on a capability-based security boundary with Ollama inference, explicit memory, PySide6 desktop workspace, multimodal vision, Hive Mind multi-agent coordination, scoped desktop autonomy, and proactive observation.
+Local-first, privacy-respecting personal AI assistant and autonomous desktop companion for Windows 11. Built on a capability-based security boundary with Ollama inference, explicit memory, PySide6 desktop workspace, multimodal vision, Hive Mind multi-agent coordination, scoped desktop autonomy, proactive companion observation, and real-time safety auditing.
 
-## v0.2 scope
+---
 
-- Local Ollama chat
-- English / Bahasa Malaysia / casual rojak instruction handling
-- Model-provider abstraction
-- **Ollama tool calling / agent loop**
-- Read-only tool registry
-- Permission policy
-- SQLite conversation/event memory
-- Structured logging
-- System-info and filesystem read tools
-- Clean extension points for browser, voice, vision, multi-agent cognition and autonomy
+## 🚀 Core Capabilities (v0.8.0)
 
-## Requirements
+- ⚡ **Scoped Desktop Autonomy & Multi-Turn Auto-Fix:**
+  - High-precision sliced file reading (`read_text_file`) with line-range controls.
+  - Non-destructive surgical chunk editing (`edit_file_chunk`) requiring exact substring verification.
+  - Scoped shell command execution (`run_terminal_command`) bound to `workspace_root` with hard 30-second timeouts.
+  - Natural intent routing auto-detecting coding, debugging, and task execution requests with multi-turn observation feedback and self-repair.
+- 👁️ **Proactive Companion Observation (`DeltaScreenWatcher`):**
+  - Zero-GPU perceptual screen diffing (<1ms CPU overhead via 32x32 grayscale downsampling).
+  - Active window and task awareness notifying you when background builds, downloads, or jobs finish.
+  - Objective-focused vision verification (`qwen3-vl:8b`) with natural `/watch [goal]` and `/stopwatch` desktop controls.
+  - Zero continuous video streaming and a mandatory 10-minute maximum duration safety cap.
+- 🛡️ **Total Safety & Interactive Audit Ledger:**
+  - Human-in-the-loop modal approvals for all file modifications and terminal commands.
+  - Recursive argument sanitization stripping credentials, tokens, and passwords across all depths.
+  - Slide-out `AuditTimelineDrawer` (`/audit`) with live metric counters (`Total`, `Tools`, `Approved`, `Denied`), category filters, expandable JSON payload inspection, and one-click JSON export.
+- 🎙️ **Local Voice STT/TTS:**
+  - Faster-Whisper local speech-to-text with Windows CUDA DLL preloading and silence noise gating.
+  - Windows native Speech TTS and optional Piper TTS.
+- 🧠 **Explicit Long-Term Memory & Local Cognition:**
+  - Deterministic SQLite memory (`remember that...`, `what do you remember about...`).
+  - Cognitive mode routing across local models (`qwen3:8b`, `qwen3:14b`, `qwen3-vl:8b`).
+- 💬 **Desktop Workspace:**
+  - Multi-workspace dark PySide6 GUI with collapsible threaded chat sessions drawer (`+ New Chat`, rename, pin, delete).
+  - Dual-monitor screen snipper and visual inspection workspace.
 
-- Windows 11
-- Python 3.12+
-- Ollama installed and running
-- A local Ollama model with tool-calling support
+---
 
-Default text model: `qwen3:14b`.
+## 📋 Requirements
 
-## Setup
+- **Operating System:** Windows 11
+- **Python:** 3.12+
+- **Inference Runtime:** [Ollama](https://ollama.ai) installed and running locally
+- **Local Models:**
+  ```powershell
+  ollama pull qwen3:8b
+  ollama pull qwen3:14b
+  ollama pull qwen3-vl:8b
+  ```
 
+---
+
+## 🛠️ Quick Start
+
+### 1. Setup Environment
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-ollama pull qwen3:8b
-ollama pull qwen3:14b
-python -m app.main
-```
-
-Create `.env` from `.env.example` if you want to override defaults.
-
-## Desktop workspace — v0.4.2
-
-JASPER now has a Windows desktop workspace around the existing JASPER Core. It is intentionally dark, clean, compact, and simple to navigate.
-
-Install the GUI dependency:
-
-```powershell
 pip install -r requirements-desktop.txt
 ```
 
-Launch it with:
+*(Optional: for voice support, install voice dependencies)*
+```powershell
+pip install -r requirements-voice.txt
+```
 
+### 2. Configure Environment
+Copy `.env.example` to `.env` if you wish to customize model names, speech parameters, or workspace paths:
+```powershell
+Copy-Item .env.example .env
+```
+
+### 3. Launch JASPER
+Launch the desktop application:
 ```powershell
 python -m app.desktop
 ```
+*(Or double-click `JASPER.bat` for silent background launch).*
 
-The first desktop milestone provides:
-
-- Chat workspace using the existing Orchestrator.
-- Optional one-turn voice input/output through the existing voice layer.
-- Live system footer for Ollama, voice, memory/tools, and detected GPU state.
-- Windows system-tray entry with Open and Exit.
-- Navigation placeholders for Tasks, Vision, Agents, Files, Web, and Settings so later capabilities have stable UI homes.
-- GUI code isolated from JASPER Core so future vision and multi-agent work can plug into the same application.
-
-The CLI remains available for development:
-
+The developer CLI remains accessible via:
 ```powershell
 python -m app.main
 ```
 
-## v0.6.1 — Vision Foundation & Adaptive Cognition
+---
 
-v0.5 adds a provider-independent local vision layer without giving the vision model permission to control the computer.
+## 🔒 Security & Capability Boundaries
 
-Architecture:
+JASPER enforces an uncompromising, fail-closed security boundary:
+1. **Explicit Permission Gates:** Every file modification (`Risk.WRITE`) and shell execution (`Risk.EXECUTE`) unconditionally surfaces an un-ignorable modal approval dialog presenting tool name, target paths, exact parameters, and reason.
+2. **Workspace Containment:** All filesystem access and shell executions are strictly canonicalized and pinned to `workspace_root`. Directory traversal and symlink escapes are blocked.
+3. **Credential Protection:** Recursive argument sanitization redacts sensitive keys (`token`, `secret`, `password`, `key`, `credential`, `auth`, `bearer`) from all user-facing dialogs and audit representations.
+4. **Fail-Closed Lifecycle:** Modal dismissals, Esc key presses, window closures, and request cancellations immediately abort execution and release resources safely.
+5. **Zero Passive Video Streaming:** Proactive vision uses static in-memory 32x32 thumbnails; no video feeds are ever recorded or transmitted.
 
-```text
-Image file
-   ↓
-VisionManager
-   ↓
-VisionRouter
-   ↓
-VisionProvider
-   ↓
-VisionResult
-   ↓
-Future JASPER Core integration
-```
+---
 
-The first implementation uses Ollama's multimodal `/api/chat` interface and sends image data through the message `images` field. It does not add external cloud vision services, continuous screen monitoring, or computer-control actions.
+## 🗺️ Milestone Evolution Summary
 
-Current local baseline:
+| Milestone | Release | Core Capabilities | Verification Status |
+| :--- | :--- | :--- | :--- |
+| **Foundation & Core CLI** | `v0.1 – v0.2.4` | Local Ollama client, hardware grounding (`get_system_info`), read-only filesystem inspection, structured logging. | **Complete** |
+| **Explicit Memory Layer** | `v0.3.0` | Deterministic SQLite keyword-overlap memory store. Only explicit commands persist memories. | **Complete** |
+| **Desktop GUI & Voice Foundation** | `v0.4.0 – v0.4.2` | PySide6 dark UI, system tray, Faster-Whisper local CUDA STT, Windows Speech TTS. | **Complete** |
+| **Multimodal Vision & Cancellation** | `v0.5.0 – v0.6.1` | Static image file inspection via `qwen3-vl:8b`, cognitive routing, full-stack cooperative cancellation tokens. | **Complete** |
+| **Hive Mind Multi-Agent Core** | `v0.7.0 – v0.7.3` | Planner/Executor delegation, `ScopedPermissionManager`, async `ApprovalGate`, live-model verification harness. | **Complete** |
+| **Desktop Autonomy & Observation** | `v0.8.0` | Surgical file chunk editing, scoped terminal commands, `DeltaScreenWatcher`, slide-out `AuditTimelineDrawer`. | **Current (GA)** |
+| **Daily Driver Desktop Assistant** | `v0.9.0` | Global Windows hotkey overlay, ambient resource monitoring, scheduled task queue. | *Planned* |
+| **Companion Integration & Mobile** | `v1.0.0` | Authenticated local REST daemon, secure mobile companion app (Tailscale/Wi-Fi), remote task approvals. | *Planned* |
 
-```text
-JASPER_VISION_MODEL=qwen3-vl:8b
-JASPER_VISION_MAX_OUTPUT_TOKENS=512
-JASPER_VISION_MAX_IMAGE_MB=10
-```
+---
 
-Install the vision model separately:
+## 📚 Technical Documentation
 
-```powershell
-ollama pull qwen3-vl:8b
-```
-
-The CLI can test the foundation before the desktop Vision workspace is wired in:
-
-```text
-:vision <image-path> <question>
-```
-
-Example:
-
-```text
-:vision C:\Users\Name\Pictures\test.png What is in this image?
-```
-
-Safety boundary for v0.6.1:
-
-- Image files are read-only inputs.
-- Vision analysis does not click, type, delete, execute commands, or modify the machine.
-- Continuous screen watching is not enabled.
-- Visual observations are kept separate from verified system facts.
-- Provider/model choice is configurable rather than hard-coded into JASPER Core.
-
-## v0.2.2 — Hardware & Runtime Awareness
-
-`get_system_info` can report the Windows CPU model, CPU core counts, live RAM values, NVIDIA GPU/VRAM state, mounted storage volumes, and local Ollama `/api/ps` state.
-
-## v0.2.3 — System Information Accuracy
-
-- Direct hardware/runtime fact questions force a fresh `get_system_info` observation before answering.
-- RAM and storage are read from the live machine rather than inferred by the model.
-- Direct system-fact responses are formatted from observed tool values.
-
-## v0.2.4 — Expanded Ground-Truth System Observation
-
-- Combined hardware/runtime questions and common phrases such as `my PC specs` force a fresh system observation.
-- Conceptual questions remain on the normal LLM path.
-
-## v0.3.0 — Explicit Long-Term Memory
-
-v0.3 adds a local persistent memory layer.
-
-- Use `Remember that ...` to explicitly save a long-term memory.
-- Ask `What do you remember about ...?` to recall it.
-- Use `Forget ...` to remove a matching memory.
-- Memory search is deterministic and local; no embeddings or external memory service are required.
-- Only explicit user memory commands write long-term memories.
-
-## v0.4.0 — Voice Interface Foundation
-
-Voice remains an interface around the existing JASPER Core:
-
-```text
-Voice → STT → JASPER Core → response → TTS
-```
-
-The voice stack uses local Faster-Whisper STT and Windows Speech TTS by default, with optional Piper TTS. Voice dependencies remain separate in `requirements-voice.txt`.
-
-Enable voice with:
-
-```text
-JASPER_VOICE_ENABLED=true
-```
-
-Useful commands in the CLI are `:voice`, `:conversation`, and `:speak <text>`.
-
-## v0.4.1 — Voice Quality + Continuous Conversation
-
-- Configurable STT language, beam size, and initial prompt.
-- Bounded `:conversation` mode.
-- Explicit local English stop phrases, with `stop listening` as the canonical control phrase.
-- TTS formatting cleanup and configurable Windows voice/rate/volume.
-- Continuous conversation does not create an always-listening or wake-word service.
-
-## v0.4.2 — Desktop + Tested STT Baseline
-
-The current tested STT baseline is fixed Malay recognition (`ms`) rather than automatic language detection. The language setting is an STT control only; the LLM still receives text and can understand/respond in English, Bahasa Malaysia, or BM-English rojak.
-
-Defaults:
-
-```text
-JASPER_STT_MODEL=small
-JASPER_STT_DEVICE=auto
-JASPER_STT_GPU_COMPUTE_TYPE=int8_float16
-JASPER_STT_CPU_COMPUTE_TYPE=int8
-JASPER_STT_LANGUAGE=ms
-JASPER_STT_BEAM_SIZE=5
-```
-
-The desktop interface is the main application shell. Vision, richer task management, adaptive multi-agent cognition, web research, and automation can be added behind the existing navigation instead of requiring a future GUI rewrite.
-
-## Safety boundary
-
-JASPER still uses a read-only permission layer. The current tool set has no arbitrary shell, delete-file, registry, admin, or destructive tool.
-
-## v0.7 — Hive Mind Multi-Agent Architecture, Desktop Approval & Live Harness Verification
-
-The repository implements the v0.7 Hive Mind multi-agent architecture (Slices 1–7), desktop approval integration, and controlled live-model verification (Steps 7–18B):
-- Typed contracts (`app/agents/contracts.py`).
-- Capability-based `ScopedPermissionManager` with workspace boundary containment.
-- Asynchronous `ApprovalGate` and thread-safe resolution API (`Coordinator.resolve_approval`).
-- Guarded `Coordinator` recovery (`MultiAgentCoordinator.reset()`) and planner rejection audit events.
-- PySide6 desktop approval presentation bridge (`JasperWorker.approval_requested`) and modal dialog (`ApprovalDialog`) with recursive privacy redaction.
-- Response sanitization (`sanitize_thinking_tags`) stripping model reasoning artifacts.
-- Deterministic end-to-end integration test suite (`tests/test_desktop_approval_e2e.py`).
-- Isolated live-model test harness (`tests/support/live_harness.py`, `tests/test_live_harness_contracts.py`) validated against local Ollama `qwen3:14b`.
-
-## v0.8 — Desktop Autonomy, Proactive Vision & Audit Ledger
-
-JASPER v0.8 introduces scoped desktop autonomy, proactive companion observation, and interactive safety auditing:
-- **Scoped Desktop Autonomy:** Surgical file chunk editing (`edit_file_chunk`), sliced file reading (`read_text_file`), and scoped terminal execution (`run_terminal_command`) bound to `workspace_root` with 30-second timeouts.
-- **Natural Intent Routing & Auto-Fix:** `CognitiveRouter` transparently detects coding and diagnostic requests, driving a multi-turn problem-solving loop with feedback injection (stdout/stderr, file diffs, screen captures).
-- **Proactive Screen Observation (`DeltaScreenWatcher`):** Zero-GPU perceptual diffing (<1ms, 32x32 grayscale downsampling) and task-awareness notifying users when background jobs complete (`/watch [goal]`).
-- **Interactive Audit Timeline Drawer (`/audit`):** Slide-out safety drawer with live metric chips (`Total`, `Tools`, `Approved`, `Denied`), category filters, expandable JSON payload inspection, and JSON export.
-- **Release Notes:** Complete feature breakdown available in [v0.8.0 Release Notes](docs/release_notes/v0.8.0.md).
-
-## Documentation
-
-For technical architecture, design principles, and engineering decisions:
+For in-depth architectural specifications, design rationales, and engineering decisions:
 - [Architecture & Concurrency Flow](docs/ARCHITECTURE.md) — System request flow, cognitive modes, and capability boundaries
 - [Architecture Decision Records (ADRs)](docs/DECISIONS.md) — 24 documented decisions on security, state machines, and fail-closed policies
 - [Project Vision & Core Principles](docs/PROJECT_VISION.md) — Local-first privacy, bounded autonomy, and permission gating
-- [Development Roadmap](docs/ROADMAP.md) — Planned capabilities and milestone tracking
+- [Development Roadmap](docs/ROADMAP.md) — Detailed milestone tracking and future planning
+- [v0.8.0 Release Notes](docs/release_notes/v0.8.0.md) — Comprehensive feature breakdown and test verification metrics
 - [Windows Standalone Packaging](docs/deployment/windows_packaging.md) — Instructions for building the standalone PyInstaller release
-
